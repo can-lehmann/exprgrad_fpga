@@ -72,7 +72,9 @@ type
     InstrLoop, InstrThreads,
     # GPU
     InstrGpu, InstrIf, InstrBarrier,
-    InstrSharedCache, InstrCacheWrite
+    InstrSharedCache, InstrCacheWrite,
+    # FPGA
+    InstrNestedLoops
   
   GpuIndex* = object
     local*: RegId
@@ -106,6 +108,8 @@ type
         gpu_indices*: seq[GpuIndex]
       of InstrSharedCache:
         cache_size*: int
+      of InstrNestedLoops:
+        nested_loops*: seq[(RegId, int)]
       else: discard
   
   Register* = object
@@ -212,7 +216,7 @@ type
     expr*: Expr
     write*: TensorOp
   
-  CompileTarget* = enum CompileCpu, CompileThreads, CompileGpu
+  CompileTarget* = enum CompileCpu, CompileThreads, CompileGpu, CompileFpga
   
   Target* = ref object
     name*: string
@@ -234,8 +238,13 @@ type
       of TensorCache: cache*: TensorId
       else: discard
   
-  ScalarType* = enum
-    Scalar32, Scalar64
+  IndexType* = object
+    bits*: int
+  
+  ScalarType* = object
+    bits*: int
+    is_fixed*: bool
+    fixed_point*: int
   
   Stage* = enum
     StageTyped, # All register types are inferred
@@ -260,6 +269,7 @@ type
     caches*: seq[TensorId]
     targets*: Table[string, Target]
     stages*: set[Stage]
+    index_type*: IndexType
     scalar_type*: ScalarType
 
 const

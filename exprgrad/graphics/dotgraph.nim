@@ -15,7 +15,7 @@
 # Render programs as DOT graphs 
 
 import std/[tables, sets, strutils]
-import ../ir, ../irprint
+import ../ir, ../irprint, ../fpga/logicdsl
 
 type
   Node = object
@@ -106,3 +106,118 @@ proc to_dot_graph*(program: Program, target: string): string =
   
   result = $graph
 
+type NodeId = distinct int
+
+proc `$`(id: NodeId): string =
+  if int(id) == 0:
+    result = "no_node"
+  else:
+    result = "node" & $(int(id) - 1)
+
+type LogicGraphIds = object
+  logic_ids: Table[Logic, NodeId]
+  mem_ids: Table[Memory, NodeId]
+  id_count: int
+
+proc alloc_node(ids: var LogicGraphIds): NodeId =
+  result = NodeId(ids.id_count + 1)
+  ids.id_count += 1
+
+proc to_dot_graph(logic: Logic, ids: var LogicGraphIds, graph: var DotGraph): NodeId
+
+proc to_dot_graph(mem: Memory, ids: var LogicGraphIds, graph: var DotGraph): NodeId =
+  if mem in ids.mem_ids:
+    return ids.mem_ids[mem]
+  result = ids.alloc_node()
+  ids.mem_ids[mem] = result
+  graph.nodes.add(Node(name: $result, attrs: @{
+    "label": "memory",
+    "shape": "box"
+  }))
+  if mem.writes.len > 0:
+    let clock = mem.clock.to_dot_graph(ids, graph)
+    graph.edges.add(Edge(a: $clock, b: $result))
+  for (cond, index, value) in mem.writes:
+    let write = $ids.alloc_node()
+    graph.nodes.add(Node(name: $write, attrs: @{
+      "label": "Write",
+      "shape": "trapezium"
+    }))
+    graph.edges.add(Edge(a: $write, b: $result))
+    
+    let args = [
+      cond.to_dot_graph(ids, graph),
+      index.to_dot_graph(ids, graph),
+      value.to_dot_graph(ids, graph)
+    ]
+    for arg in args:
+      graph.edges.add(Edge(a: $arg, b: $write))
+
+proc to_dot_graph(logic: Logic, ids: var LogicGraphIds, graph: var DotGraph): NodeId =
+  if logic.is_nil:
+    result = ids.alloc_node()
+    graph.nodes.add(Node(name: $result, attrs: @{
+      "label": "nil",
+      "style": "filled",
+      "fillcolor": "#f46166"
+    }))
+    return
+  if logic in ids.logic_ids:
+    return ids.logic_ids[logic]
+  result = ids.alloc_node()
+  ids.logic_ids[logic] = result
+  var attrs: seq[(string, string)] = @[]
+  case logic.kind:
+    of LogicReg:
+      attrs = @{
+        "label": ($logic.kind)[len("Logic")..^1],
+        "shape": "box"
+      }
+    of LogicConst:
+      attrs = @{
+        "label": format_value(logic.width, logic.value),
+        "shape": "box",
+        "style": "rounded"
+      }
+    of LogicRead:
+      attrs = @{
+        "label": "Read",
+        "shape": "invtrapezium"
+      }
+    of LogicInput:
+      attrs = @{
+        "label": logic.name,
+        "shape": "house"
+      }
+    else:
+      attrs = @{"label": ($logic.kind)[len("Logic")..^1]}
+  graph.nodes.add(Node(name: $result, attrs: attrs))
+  for arg in logic.args:
+    var attrs: seq[(string, string)] = @[]
+    if not arg.is_nil and arg.width != 0:
+      attrs.add(("label", $arg.width))
+    graph.edges.add(Edge(
+      a: $arg.to_dot_graph(ids, graph),
+      b: $result,
+      attrs: attrs
+    ))
+  if logic.kind == LogicRead:
+    let mem = logic.memory.to_dot_graph(ids, graph)
+    graph.edges.add(Edge(a: $mem, b: $result))
+
+proc to_dot_graph*(circuit: Circuit): string =
+  var
+    graph = DotGraph()
+    ids = LogicGraphIds()
+  
+  for (name, output) in circuit.outputs:
+    let
+      value_node = output.to_dot_graph(ids, graph)
+      output_node = ids.alloc_node()
+    graph.edges.add(Edge(a: $value_node, b: $output_node))
+    graph.nodes.add(Node(name: $output_node, attrs: @{
+      "label": name,
+      "shape": "invhouse"
+    }))
+  
+  result = $graph

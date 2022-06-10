@@ -146,6 +146,12 @@ proc infer_types(instrs: seq[Instr], regs: var seq[Register]) =
         if arg_type(2).kind != TypeScalar:
           raise TypeError(msg: "Third argument of " & $instr.kind & " must be of type Scalar")
       of InstrBarrier: discard
+      of InstrNestedLoops:
+        for it, (iter, step) in instr.nested_loops:
+          if arg_type(2 * it).kind != TypeIndex or arg_type(2 * it + 1).kind != TypeIndex:
+            raise TypeError(msg: "Loop bounds must be of type Index")
+          regs[iter].typ = Type(kind: TypeIndex, count: 1)
+        instr.body.infer_types(regs)
 
 proc infer_types(expr: Expr, regs: var seq[Register]) =
   expr.instrs.infer_types(regs)
@@ -1419,7 +1425,8 @@ proc choose_parallel*(program: Program) =
   const LOOP_COUNT = [
     CompileCpu: 0,
     CompileThreads: 1,
-    CompileGpu: 3
+    CompileGpu: 3,
+    CompileFpga: 0
   ]
   
   for name, target in program.targets:
@@ -1937,7 +1944,7 @@ proc inline_loop(kernel: Kernel, compile_target: CompileTarget) =
       kernel.expr.instrs.insert(Instr(kind: InstrBarrier))
   if loop.mode >= LoopParallel:
     case compile_target:
-      of CompileCpu:
+      of CompileCpu, CompileFpga:
         raise StageError(msg: "Parallel loops are not supported by CPU target")
       of CompileThreads:
         let (range_begin, range_end) = (kernel.regs.alloc(), kernel.regs.alloc())
@@ -2029,13 +2036,27 @@ proc inline_loop(kernel: Kernel, compile_target: CompileTarget) =
           kernel.expr.instrs.insert(loop.stop.setup)
         return
   else:
-    kernel.expr.instrs = @[Instr(kind: InstrLoop,
-      args: @[loop.start.only_register, loop.stop.only_register],
-      loop_iter: loop.iter,
-      loop_step: loop.step,
-      loop_fuse_next: loop.fuse_next,
-      body: kernel.expr.instrs
-    )]
+    case compile_target:
+      of CompileFpga:
+        var instr = Instr(kind: InstrNestedLoops, body: kernel.expr.instrs)
+        kernel.expr.instrs = @[]
+        for loop in kernel.loops:
+          instr.args.add([loop.start.only_register, loop.stop.only_register])
+          instr.nested_loops.add((loop.iter, loop.step))
+          kernel.expr.instrs.insert(loop.start.setup)
+          kernel.expr.instrs.insert(loop.stop.setup)
+        kernel.loops = @[]
+        instr.args.add([loop.start.only_register, loop.stop.only_register])
+        instr.nested_loops.add((loop.iter, loop.step))
+        kernel.expr.instrs.add(instr)
+      else:
+        kernel.expr.instrs = @[Instr(kind: InstrLoop,
+          args: @[loop.start.only_register, loop.stop.only_register],
+          loop_iter: loop.iter,
+          loop_step: loop.step,
+          loop_fuse_next: loop.fuse_next,
+          body: kernel.expr.instrs
+        )]
   kernel.expr.instrs.insert(loop.start.setup)
   kernel.expr.instrs.insert(loop.stop.setup)
 
@@ -2108,6 +2129,9 @@ proc lift_invariants(instrs: var seq[Instr],
           body_min_level = levels.len
         of InstrIf:
           body_min_level = levels.len # TODO: Only for InstrRead, InstrArrayRead, ...
+        of InstrNestedLoops:
+          for (iter, step) in instr.nested_loops:
+            regs[iter] = levels.len
         else: discard
       instrs[it].body.lift_invariants(regs, levels, body_min_level)
       let level = levels.pop()
@@ -2240,6 +2264,10 @@ proc validate(instrs: seq[Instr], regs: var seq[bool]) =
           closure[index.local] = true
           closure[index.group] = true
         instr.body.validate(closure)
+      of InstrNestedLoops:
+        for (iter, step) in instr.nested_loops:
+          regs[iter] = true
+        instr.body.validate(regs)
       else: discard
     
     if instr.res != RegId(0):

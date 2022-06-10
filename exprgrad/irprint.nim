@@ -42,6 +42,9 @@ proc count_usages(op: TensorOp, usages: var seq[int]) =
 
 proc count_usages(kernel: Kernel): seq[int] =
   result = new_seq[int](kernel.regs.len)
+  for loop in kernel.loops:
+    loop.start.count_usages(result)
+    loop.stop.count_usages(result)
   if kernel.write.data != RegId(0):
     kernel.write.count_usages(result)
     result[kernel.write.data] += 1
@@ -65,6 +68,9 @@ proc find_inline_regs(instrs: seq[Instr],
         for index in instr.gpu_indices:
           inline[index.local] = false
           inline[index.group] = false
+      of InstrNestedLoops:
+        for (iter, step) in instr.nested_loops:
+          inline[iter] = false
       of InstrRead: inline[instr.res] = false
       of InstrIndex, InstrBoolean, InstrScalar:
         inline[instr.res] = true
@@ -112,6 +118,18 @@ proc stringify(instr: Instr, regs: var seq[string], level: int): string =
         else:
           result &= "\n" & make_indent(level + 2)
         result &= "(local " & $index.local & ", group " & $index.group & ", size " & $index.size & ")"
+        result &= " in " & regs[instr.args[it * 2]] & " to " & regs[instr.args[it * 2 + 1]]
+      result &= ":\n"
+      result &= instr.body.stringify(regs, level + 1)
+    of InstrNestedLoops:
+      const name = "nested_loops"
+      result &= name
+      for it, (iter, step) in instr.nested_loops:
+        if it == 0:
+          result &= " "
+        else:
+          result &= "\n" & make_indent(level) & make_indent(name.len + 1, 1)
+        result &= regs[iter]
         result &= " in " & regs[instr.args[it * 2]] & " to " & regs[instr.args[it * 2 + 1]]
       result &= ":\n"
       result &= instr.body.stringify(regs, level + 1)
@@ -168,7 +186,12 @@ proc stringify(index: LinearIndex, regs: var seq[string]): string =
   for reg, factor in index.factors:
     if result.len != 0:
       result &= " + "
-    result &= $factor & " * " & regs[reg]
+    if factor == 1:
+      result &= regs[reg]
+    else:
+      result &= $factor & " * " & regs[reg]
+  if result.len == 0:
+    result = "0"
 
 proc stringify(op: TensorOp, kind: TensorOpKind, regs: var seq[string], level: int): string =
   result &= make_indent(level)

@@ -20,9 +20,13 @@ import runtimes/gpu
 import ir, clgen
 
 proc to_llvm(scalar_type: ScalarType): TypeRef =
-  case scalar_type:
-    of Scalar32: result = float_type()
-    of Scalar64: result = double_type()
+  if not scalar_type.is_fixed:
+    case scalar_type.bits:
+      of 32: result = float_type()
+      of 64: result = double_type()
+      else: raise GeneratorError(msg: $scalar_type & " is not supported by LLVM target")
+  else:
+    raise GeneratorError(msg: $scalar_type & " is not supported by LLVM target")
 
 type Builtin = object
   scalar_type: ScalarType
@@ -136,7 +140,7 @@ proc init_builtin(module: ModuleRef, program: Program): Builtin =
   result.set_gpu_kernel_index = module.add_function("set_gpu_kernel_index", result.set_gpu_kernel_index_signature())
   result.set_gpu_kernel_tensor = module.add_function("set_gpu_kernel_tensor", result.set_gpu_kernel_tensor_signature())
   
-  let type_postfix = [Scalar32: "f32", Scalar64: "f64"][result.scalar_type]
+  let type_postfix = "f" & $result.scalar_type.bits
   result.sin = module.add_function(cstring("llvm.sin." & type_postfix), result.scalar_unary_intrinsic_signature())
   result.cos = module.add_function(cstring("llvm.cos." & type_postfix), result.scalar_unary_intrinsic_signature())
   result.exp = module.add_function(cstring("llvm.exp." & type_postfix), result.scalar_unary_intrinsic_signature())
@@ -211,7 +215,7 @@ proc to_llvm(instrs: seq[Instr], ctx: Context) =
     
     case instr.kind:
       of InstrIndex:
-        res = const_nim_int(instr.index_lit)
+        res = const_nim_int(instr.index_lit) # TODO: Index type
       of InstrScalar:
         res = const_real(ctx.scalar_type(), cdouble(instr.scalar_lit))
       of InstrBoolean:

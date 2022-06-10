@@ -239,13 +239,11 @@ proc new_model*[T](source: Program, gpu_ctx: GpuContext): Model[T] =
   result = new_model(source, program, params, caches, gpu_ctx)
 
 template to_scalar_type(T: typedesc): ScalarType =
-  when T is float32:
-    Scalar32
-  elif T is float64:
-    Scalar64
+  when T is float32 or T is float64:
+    ScalarType(bits: sizeof(T) * 8)
   else:
     raise new_exception(ValueError, $T & " is not a valid scalar type")
-    Scalar32
+    ScalarType()
 
 proc emit_ir*[T](model: Model[T]): string =
   bind irprint.`$`
@@ -258,6 +256,7 @@ proc save_llvm*[T](model: Model[T], path: string) =
 proc compile*[T](graphs: varargs[Fun], gpu: GpuContext = nil): Model[T] =
   let source = graphs.to_program()
   source.scalar_type = to_scalar_type(T)
+  source.index_type = IndexType(bits: sizeof(int) * 8)
   result = new_model[T](source, gpu)
 
 proc alloc_shapes[T](cpu: CpuModel[T], model: Model[T], target: Target, shapes: Table[ir.TensorId, seq[int]]) =
@@ -329,6 +328,8 @@ proc flush_state_tensors[T](model: Model[T], to: CompileTarget) =
            model.gpu.tensors[id].shape != tensor.shape:
           model.gpu.tensors[id] = alloc_tensor[T](model.gpu.ctx, tensor.shape)
         model.gpu.tensors[id].write(tensor)
+    of CompileFpga:
+      raise new_exception(ValueError, "Unable to flush state tensors to FPGA")
   model.state_location.incl(to)
 
 proc alloc_shapes[T](model: Model[T], target: Target, shapes: Table[ir.TensorId, seq[int]]) =
@@ -340,6 +341,8 @@ proc alloc_shapes[T](model: Model[T], target: Target, shapes: Table[ir.TensorId,
       model.cpu.alloc_shapes(model, target, shapes)
     of CompileGpu:
       model.gpu.alloc_shapes(model, target, shapes)
+    of CompileFpga:
+      raise new_exception(ValueError, "Unable to allocate tensor shapes on FPGA")
 
 proc write_input[T](model: Model[T], to: CompileTarget, name: string, tensor: Tensor[T]) =
   if name notin model.program.inputs:
@@ -353,6 +356,8 @@ proc write_input[T](model: Model[T], to: CompileTarget, name: string, tensor: Te
          model.gpu.tensors[tensor_id].shape != tensor.shape:
         model.gpu.tensors[tensor_id] = alloc_tensor[T](model.gpu.ctx, tensor.shape)
       model.gpu.tensors[tensor_id].write(tensor)
+    of CompileFpga:
+      raise new_exception(ValueError, "Unable to write input to FPGA")
 
 proc read_output[T](model: Model[T], target: CompileTarget, tensor: TensorId): Tensor[T] =
   case target:
@@ -361,6 +366,8 @@ proc read_output[T](model: Model[T], target: CompileTarget, tensor: TensorId): T
       model.cpu.tensors[tensor] = nil
     of CompileGpu:
       result = model.gpu.tensors[tensor].read()
+    of CompileFpga:
+      raise new_exception(ValueError, "Unable to read output from FPGA")
 
 proc zero_result_tensor[T](model: Model[T], target: CompileTarget, tensor_id: TensorId) =
   case target:

@@ -53,8 +53,13 @@ const NAMES = [
 ]
 
 proc to_cl(scalar_type: ScalarType): string =
-  const TYPES = [Scalar32: "float", Scalar64: "double"]
-  result = TYPES[scalar_type]
+  if not scalar_type.is_fixed:
+    case scalar_type.bits:
+      of 32: result = "float"
+      of 64: result = "double"
+      else: raise GeneratorError(msg: $scalar_type & " is not supported by OpenCL target")
+  else:
+    raise GeneratorError(msg: $scalar_type & " is not supported by OpenCL target")
 
 proc nim_int_to_cl(): string = "long"
 
@@ -172,7 +177,7 @@ proc to_cl(instrs: seq[Instr], ctx: Context): string =
         expr = arr & "[" & index & "]"
       of InstrShape, InstrLen, InstrShapeLen, InstrEpoch:
         raise GeneratorError(msg: $instr.kind & " may not appear in OpenCL kernel. This is an internal compiler error, please report this issue.")
-      of InstrLog, InstrThreads,  InstrArray, InstrArrayLen, InstrWrap, InstrGpu:
+      of InstrLog, InstrThreads,  InstrArray, InstrArrayLen, InstrWrap, InstrGpu, InstrNestedLoops:
         raise GeneratorError(msg: "Unable to generate OpenCL source for " & $instr.kind)
     
     var stmt = ""
