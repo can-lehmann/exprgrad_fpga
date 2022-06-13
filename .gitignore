@@ -29,6 +29,9 @@ tests/test_idxformat
 tests/data.bin
 tests/module.bc
 tests/module.ll
+tests/output.v
+tests/output.gv
+tests/output.svg
 old/
 docs/assets/social-banner/
 data.bin

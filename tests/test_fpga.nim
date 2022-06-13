@@ -16,34 +16,29 @@
 
 import std/[tables]
 import exprgrad, exprgrad/[ir, irprint, model, passes, parser, logicgen, fpga/logicdsl, graphics/dotgraph]
+import exprgrad/fpga/platform/ulx3s
 import ../tools/test_framework
 
 test "matmul/passes":
   let
-    a = input("a", [1024, 1024])
-    b = input("b", [1024, 1024])
-  c*[y, x] ++= a[y, it] * b[it, x] | (x, y, it)
+    a = input("a", [2, 3])
+    b = input("b", [3, 2])
+  #c*[y, x] ++= a[y, it] * b[it, x] | (x, y, it)
+  c*[y, x] ++= a[y, x] | (y, x) # * b[it, x] | (x, y, it)
   let program = to_program([c.target("c", CompileFpga)])
-  program.scalar_type = ScalarType(bits: 16, is_fixed: true, fixed_point: 8)
+  program.scalar_type = ScalarType(bits: 16, is_fixed: true, fixed_point: 4)
   program.index_type = IndexType(bits: 16)
   program.compile()
   let target = program.targets["c"]
   echo target
   
-  proc wrapper(circuit: Circuit, target: TargetSpec): Circuit =
-    let clock = Logic.input("clk_25mhz")
-    result = Circuit.new([clock], {
-      "wifi_gpio0": Logic.constant(true),
-      "led": circuit.instantiate({
-        circuit.find_role(InputClock).name: clock,
-        "read_index": Logic.constant(16, 0)
-      }, 0)
-    }, name="main")
-  
-  let
-    circuit = target.to_circuit(program)
-    target_spec = TargetSpec(wrapper: wrapper)
+  let circuit = target.to_circuit(program, {
+    "a": new_tensor([2, 3], @[float64 1, 2, 3, 4, 5, 6]),
+    #"b": new_tensor([3, 2], @[float64 1, 2, 3, 4, 5, 6])
+  })
   write_file("output.gv", circuit.to_dot_graph())
   
-  echo circuit.to_verilog(target_spec)
+  let platform = Ulx3s.new("ulx3s_v20.lpf")
+  echo circuit.to_verilog(platform)
+  echo circuit.build(platform)
   #circuit.save_verilog("output.v", target_spec)

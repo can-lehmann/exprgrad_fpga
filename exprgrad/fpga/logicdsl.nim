@@ -49,6 +49,38 @@ const
     LogicSelect
   }
 
+type BitString* = object
+  size*: int
+  bytes*: seq[uint8]
+
+proc init*(_: typedesc[BitString], bits: openArray[bool]): BitString =
+  var byte_count = bits.len div 8
+  if bits.len mod 8 != 0:
+    byte_count += 1
+  
+  result = BitString(
+    size: bits.len,
+    bytes: new_seq[uint8](byte_count)
+  )
+  
+  for it, bit in bits:
+    if bit:
+      result.bytes[it div 8] = result.bytes[it div 8] or uint8(1 shl (it mod 8))
+
+proc init*(_: typedesc[BitString], size: int, value: BiggestUint): BitString =
+  var byte_count = size div 8
+  if size mod 8 != 0:
+    byte_count += 1
+  result = BitString(size: size, bytes: new_seq[uint8](byte_count))
+  for it in 0..<byte_count:
+    result.bytes[it] = uint8((value shr (it * 8)) and 0xff)
+
+proc `$`(bit_string: BitString): string =
+  result = $bit_string.size & "'b"
+  for it in countdown(bit_string.bytes.len - 1, 0):
+    for shift in countdown(min(7, bit_string.size - it * 8 - 1), 0):
+      result &= ["0", "1"][ord(((bit_string.bytes[it] shr shift) and 1) != 0)]
+
 type
   UpdateEvent* = enum
     RisingEdge, FallingEdge
@@ -61,7 +93,7 @@ type
     width*: int
     case kind*: LogicKind:
       of LogicConst:
-        value*: seq[uint8]
+        value*: BitString
       of LogicReg:
         event: UpdateEvent
         reg_name: string
@@ -90,6 +122,7 @@ type
   Memory* = ref object
     width: int
     shape: seq[int]
+    initial: seq[BitString]
     
     clock*: Logic
     event*: UpdateEvent
@@ -109,26 +142,17 @@ proc `==`*(a, b: Memory): bool = a[].addr == b[].addr
 proc hash*(circuit: Circuit): Hash = hash(circuit[].addr)
 proc `==`*(a, b: Circuit): bool = a[].addr == b[].addr
 
+proc constant*(_: typedesc[Logic], bit_string: BitString): Logic =
+  result = Logic(kind: LogicConst, width: bit_string.size, value: bit_string)
+
 proc constant*(_: typedesc[Logic], bits: int, value: BiggestUint): Logic =
-  result = Logic(kind: LogicConst, width: bits)
-  var bytes = bits div 8
-  if bits mod 8 != 0:
-    bytes += 1
-  for it in 0..<bytes:
-    result.value.add(uint8((value shr (it * 8)) and 0xff))
+  result = Logic(kind: LogicConst, width: bits, value: BitString.init(bits, value))
 
 proc constant*(_: typedesc[Logic], value: seq[bool]): Logic =
-  result = Logic(kind: LogicConst, width: value.len)
-  var bytes = new_seq[uint8](value.len div 8)
-  if value.len mod 8 != 0:
-    bytes.add(uint8(0))
-  for it, bit in value:
-    if bit:
-      bytes[it div 8] = bytes[it div 8] or uint8(1 shl (it mod 8))
-  result.value = bytes
+  result = Logic(kind: LogicConst, width: value.len, value: BitString.init(value))
 
 proc constant*(_: typedesc[Logic], value: bool): Logic =
-  result = Logic(kind: LogicConst, width: 1, value: @[uint8(ord(value))])
+  result = Logic(kind: LogicConst, width: 1, value: BitString.init([value]))
 
 proc reg*(_: typedesc[Logic],
           width: int,
@@ -198,8 +222,17 @@ proc `[]`*(value: Logic, slice: HSlice[int, int]): Logic =
 proc `&`*(a, b: Logic): Logic =
   result = Logic(kind: LogicConcat, args: @[a, b])
 
-proc new*(_: typedesc[Memory], width: int, shape: openArray[int]): Memory =
-  result = Memory(width: width, shape: @shape)
+proc new*(_: typedesc[Memory],
+          width: int,
+          shape: openArray[int],
+          initial: openArray[BitString] = []): Memory =
+  if initial.len > 0:
+    if initial.len != shape.prod():
+      raise new_exception(ValueError, "Initial memory contents must be the same size as memory")
+    for value in initial:
+      if value.size != width:
+        raise new_exception(ValueError, "Initial memory values must have same width as memory")
+  result = Memory(width: width, shape: @shape, initial: @initial)
 
 proc `[]`*(mem: Memory, index: Logic): Logic =
   result = Logic(kind: LogicRead, memory: mem, args: @[index])
@@ -370,10 +403,8 @@ proc find_circuits(circuit: Circuit): HashSet[Circuit] =
     output.find_circuits(result, closed)
 
 type
-  WrapperGenerator* = proc(circuit: Circuit, spec: TargetSpec): Circuit
-  
-  TargetSpec* = object
-    wrapper*: WrapperGenerator
+  FpgaError* = ref object of IoError
+  FpgaPlatform* = ref object of RootObj
   
   Context = object
     source: string
@@ -381,6 +412,10 @@ type
     module_names: Table[Circuit, string]
     value_names: Table[Logic, string]
     memory_names: Table[Memory, string]
+
+method wrap*(platform: FpgaPlatform, circuit: Circuit): Circuit {.base.} = circuit
+method build_verilog*(platform: FpgaPlatform, verilog: string): string {.base.} = raise FpgaError(msg: "Not implementd")
+method upload_bitstream*(platform: FpgaPlatform, bitstream_path: string) {.base.} = raise FpgaError(msg: "Not implementd")
 
 proc emit_indent(ctx: var Context, width: int = 2) =
   for it in 0..<(ctx.indent * width):
@@ -400,12 +435,6 @@ proc `[]`(ctx: var Context, circuit: Circuit): string =
     ctx.module_names[circuit] = name
   result = ctx.module_names[circuit]
 
-proc format_value*(width: int, value: seq[uint8]): string =
-  result = $width & "'b"
-  for it in countdown(value.len - 1, 0):
-    for shift in countdown(min(7, width - it * 8 - 1), 0):
-      result &= ["0", "1"][ord(((value[it] shr shift) and 1) != 0)]
-
 proc `[]`(ctx: var Context, logic: Logic): string =
   if logic notin ctx.value_names:
     var name = "value" & $ctx.value_names.len
@@ -414,7 +443,7 @@ proc `[]`(ctx: var Context, logic: Logic): string =
     elif logic.kind == LogicReg and logic.reg_name.len > 0:
       name &= "_" & logic.reg_name
     elif logic.kind == LogicConst:
-      name = format_value(logic.width, logic.value)
+      name = $logic.value
     ctx.value_names[logic] = name
   result = ctx.value_names[logic]
 
@@ -557,6 +586,19 @@ proc to_verilog(circuit: Circuit, ctx: var Context) =
     
     ctx.source &= "\n"
     
+    ctx.emit_indent()
+    ctx.source &= "initial begin\n"
+    ctx.with_indent:
+      for mem in mems:
+        if mem.initial.len > 0:
+          for it, value in mem.initial:
+            ctx.emit_indent()
+            ctx.source &= ctx[mem] & "[" & $it & "] = " & $value & ";\n"
+    ctx.emit_indent()
+    ctx.source &= "end\n"
+    
+    ctx.source &= "\n"
+    
     type
       Sensitivity = (Logic, UpdateEvent)
       
@@ -612,16 +654,19 @@ proc to_verilog(circuit: Circuit, ctx: var Context) =
   ctx.emit_indent()
   ctx.source &= "endmodule\n"
 
-proc to_verilog*(circuit: Circuit, target: TargetSpec): string =
-  let main = target.wrapper(circuit, target)
+proc to_verilog*(circuit: Circuit, platform: FpgaPlatform): string =
+  let main = platform.wrap(circuit)
   main.infer_widths()
   var ctx = Context()
   for circuit in main.find_circuits():
     circuit.to_verilog(ctx)
   result = ctx.source
 
-proc save_verilog*(circuit: Circuit, path: string, target: TargetSpec) =
-  write_file(path, circuit.to_verilog(target))
+proc save_verilog*(circuit: Circuit, path: string, platform: FpgaPlatform) =
+  write_file(path, circuit.to_verilog(platform))
+
+proc build*(circuit: Circuit, platform: FpgaPlatform): string =
+  result = platform.build_verilog(circuit.to_verilog(platform))
 
 when is_main_module:
   let
@@ -629,15 +674,3 @@ when is_main_module:
     counter = Logic.reg(32)
   counter.update(clock, RisingEdge, counter + Logic.constant(32, 1))
   let circuit = Circuit.new([clock], {"counter": counter[(32 - 8)..<32]})
-  
-  proc wrapper(circuit: Circuit, target: TargetSpec): Circuit =
-    let clock = Logic.input("clk_25mhz")
-    result = Circuit.new([clock], {
-      "wifi_gpio0": Logic.constant(true),
-      "led": circuit.instantiate({
-        circuit.find_role(InputClock).name: clock
-      }, 0)
-    }, name = "main")
-  
-  let target = TargetSpec(wrapper: wrapper)
-  circuit.save_verilog("build/output.v", target)

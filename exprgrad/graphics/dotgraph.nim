@@ -175,7 +175,7 @@ proc to_dot_graph(logic: Logic, ids: var LogicGraphIds, graph: var DotGraph): No
       }
     of LogicConst:
       attrs = @{
-        "label": format_value(logic.width, logic.value),
+        "label": $logic.value,
         "shape": "box",
         "style": "rounded"
       }

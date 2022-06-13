@@ -16,7 +16,7 @@
 
 import std/[math, tables, sets]
 import ir
-import fpga/logicdsl
+import fpga/logicdsl, tensors
 
 proc `*`(a: Logic, b: uint): Logic =
   result = Logic.constant(0, 0)
@@ -32,14 +32,14 @@ proc resize(logic: Logic, from_bits, to_bits: int): Logic =
   else:
     result = logic & Logic.constant(to_bits - from_bits, 0)
 
-proc encode_scalar(value: float64, format: ScalarType): Logic =
+proc encode_scalar(value: float64, format: ScalarType): BitString =
   var bits = new_seq[bool](format.bits)
   for it, bit in bits.mpairs:
     if it < format.fixed_point:
       bit = (int(value * float64(2 ^ (format.fixed_point - it))) and 1) != 0
     else:
       bit = (int(value) and (1 shl (it - format.fixed_point))) != 0
-  result = Logic.constant(bits)
+  result = BitString.init(bits)
 
 type
   Context = object
@@ -79,7 +79,7 @@ proc to_circuit(instrs: seq[Instr], ctx: var Context) =
       of InstrIndex:
         res = Logic.constant(index_type.bits, BiggestUint(instr.index_lit))
       of InstrScalar:
-        res = encode_scalar(instr.scalar_lit, scalar_type)
+        res = Logic.constant(encode_scalar(instr.scalar_lit, scalar_type))
       of InstrBoolean:
         res = Logic.constant(1, BiggestUint(instr.boolean_lit.ord))
       of InstrAdd: binop(`+`)
@@ -164,7 +164,9 @@ proc to_circuit*(kernel: Kernel, ctx: var Context) =
   
   kernel.setup.to_circuit(ctx)
 
-proc to_circuit*(target: Target, program: Program): Circuit =
+proc to_circuit*(target: Target,
+                 program: Program,
+                 inputs: openArray[(string, Tensor[float64])]): Circuit =
   program.assert_gen("to_circuit",
     requires={StageTyped, StageLoops}
   )
@@ -177,9 +179,18 @@ proc to_circuit*(target: Target, program: Program): Circuit =
     program: program
   )
   
+  var input_ids = init_table[TensorId, Tensor[float64]]()
+  for (name, value) in inputs:
+    input_ids[program.inputs[name]] = value
+  
   for id in target.tensors:
+    var initial: seq[BitString] = @[]
+    if id in input_ids:
+      let tensor = input_ids[id]
+      for it in 0..<tensor.len:
+        initial.add(tensor{it}.encode_scalar(program.scalar_type))
     let size = program.tensors[id].shape.prod()
-    ctx.tensors[id] = Memory.new(program.scalar_type.bits, [size])
+    ctx.tensors[id] = Memory.new(program.scalar_type.bits, [size], initial=initial)
   
   for kernel in target.kernels:
     kernel.to_circuit(ctx)
