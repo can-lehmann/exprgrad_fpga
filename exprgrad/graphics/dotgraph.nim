@@ -137,21 +137,21 @@ proc to_dot_graph(mem: Memory, ids: var LogicGraphIds, graph: var DotGraph): Nod
   if mem.writes.len > 0:
     let clock = mem.clock.to_dot_graph(ids, graph)
     graph.edges.add(Edge(a: $clock, b: $result))
-  for (cond, index, value) in mem.writes:
-    let write = $ids.alloc_node()
-    graph.nodes.add(Node(name: $write, attrs: @{
+  for write in mem.writes:
+    let write_id = ids.alloc_node()
+    graph.nodes.add(Node(name: $write_id, attrs: @{
       "label": "Write",
       "shape": "trapezium"
     }))
-    graph.edges.add(Edge(a: $write, b: $result))
+    graph.edges.add(Edge(a: $write_id, b: $result))
     
     let args = [
-      cond.to_dot_graph(ids, graph),
-      index.to_dot_graph(ids, graph),
-      value.to_dot_graph(ids, graph)
+      write.cond.to_dot_graph(ids, graph),
+      write.index.to_dot_graph(ids, graph),
+      write.value.to_dot_graph(ids, graph)
     ]
     for arg in args:
-      graph.edges.add(Edge(a: $arg, b: $write))
+      graph.edges.add(Edge(a: $arg, b: $write_id))
 
 proc to_dot_graph(logic: Logic, ids: var LogicGraphIds, graph: var DotGraph): NodeId =
   if logic.is_nil:

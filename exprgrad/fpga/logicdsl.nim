@@ -82,13 +82,18 @@ type
       of LogicRead:
         memory*: Memory
   
+  MemoryWrite = object
+    cond*: Logic
+    index*: Logic
+    value*: Logic
+  
   Memory* = ref object
     width: int
     shape: seq[int]
     
     clock*: Logic
     event*: UpdateEvent
-    writes*: seq[(Logic, Logic, Logic)]
+    writes*: seq[MemoryWrite]
   
   Circuit* = ref object
     name: string
@@ -205,7 +210,7 @@ proc write*(mem: Memory, clock: Logic, event: UpdateEvent, cond, index, value: L
     mem.event = event
   elif mem.clock != clock:
     raise new_exception(ValueError, "Memory has multiple drivers")
-  mem.writes.add((cond, index, value))
+  mem.writes.add(MemoryWrite(cond: cond, index: index, value: value))
 
 proc instantiate*(circuit: Circuit, args: openArray[Logic], output: int): Logic =
   result = Logic(kind: LogicInstance,
@@ -250,11 +255,11 @@ proc infer_widths(mem: Memory, closed: var HashSet[Logic]) =
   if mem.writes.len > 0:
     if mem.clock.infer_width(closed) != 1:
       raise new_exception(ValueError, "Clock signal must have width 1")
-  for (cond, index, value) in mem.writes:
-    if cond.infer_width(closed) != 1:
+  for write in mem.writes:
+    if write.cond.infer_width(closed) != 1:
       raise new_exception(ValueError, "Condition must have width 1")
-    discard index.infer_width(closed)
-    if value.infer_width(closed) != mem.width:
+    discard write.index.infer_width(closed)
+    if write.value.infer_width(closed) != mem.width:
       raise new_exception(ValueError, "")
 
 proc infer_width(logic: Logic, closed: var HashSet[Logic]): int =
@@ -335,10 +340,10 @@ proc find_state(logic: Logic, regs: var HashSet[Logic], mems: var HashSet[Memory
         logic.args[0].find_state(regs, mems)
         if logic.memory.writes.len > 0:
           logic.memory.clock.find_state(regs, mems)
-        for (cond, index, value) in logic.memory.writes:
-          cond.find_state(regs, mems)
-          index.find_state(regs, mems)
-          value.find_state(regs, mems)
+        for write in logic.memory.writes:
+          write.cond.find_state(regs, mems)
+          write.index.find_state(regs, mems)
+          write.value.find_state(regs, mems)
     else: discard
   
   for arg in logic.args:
@@ -517,10 +522,10 @@ proc to_verilog(circuit: Circuit, ctx: var Context) =
     for mem in mems:
       if mem.writes.len > 0:
         combs.add(mem.clock)
-      for (cond, index, value) in mem.writes:
-        combs.add(cond)
-        combs.add(index)
-        combs.add(value)
+      for write in mem.writes:
+        combs.add(write.cond)
+        combs.add(write.index)
+        combs.add(write.value)
     for (name, output) in circuit.outputs:
       combs.add(output)
     combs
@@ -552,25 +557,49 @@ proc to_verilog(circuit: Circuit, ctx: var Context) =
     
     ctx.source &= "\n"
     
-    var seq_blocks = init_table[(Logic, UpdateEvent), seq[(Logic, Logic)]]()
-    for reg in regs:
-      let
-        (cond, value) = (reg.args[1], reg.args[2])
-        sensitivity = (cond, reg.event)
-      if sensitivity notin seq_blocks:
-        seq_blocks[sensitivity] = new_seq[(Logic, Logic)]()
-      seq_blocks[sensitivity].add((reg, value))
+    type
+      Sensitivity = (Logic, UpdateEvent)
+      
+      SequentialBlock = object
+        regs: seq[Logic]
+        mems: seq[Memory]
     
-    for sensitivity, assigns in seq_blocks:
+    var seq_blocks = init_table[Sensitivity, SequentialBlock]()
+    for reg in regs:
+      let sensitivity = (reg.args[1], reg.event)
+      if sensitivity notin seq_blocks:
+        seq_blocks[sensitivity] = SequentialBlock()
+      seq_blocks[sensitivity].regs.add(reg)
+    
+    for mem in mems:
+      if mem.writes.len > 0:
+        let sensitivity = (mem.clock, mem.event)
+        if sensitivity notin seq_blocks:
+          seq_blocks[sensitivity] = SequentialBlock()
+        seq_blocks[sensitivity].mems.add(mem)
+    
+    for sensitivity, seq_block in seq_blocks:
       let (signal, event) = sensitivity
       ctx.emit_indent()
       ctx.source &= "always @("
       ctx.source &= [RisingEdge: "posedge", FallingEdge: "negedge"][event]
       ctx.source &= " " & ctx[signal] & ") begin\n"
       ctx.with_indent:
-        for (target, value) in assigns:
+        for reg in seq_block.regs:
           ctx.emit_indent()
-          ctx.source &= ctx[target] & " <= " & ctx[value] & ";\n"
+          ctx.source &= ctx[reg] & " <= " & ctx[reg.args[2]] & ";\n"
+        for mem in seq_block.mems:
+          ctx.emit_indent()
+          for it, write in mem.writes:
+            if it != 0:
+              ctx.source &= " else "
+            ctx.source &= "if (" & ctx[write.cond] & ") begin\n"
+            ctx.with_indent:
+              ctx.emit_indent()
+              ctx.source &= ctx[mem] & "[" & ctx[write.index] & "] <= " & ctx[write.value] & ";\n"
+            ctx.emit_indent()
+            ctx.source &= "end"
+          ctx.source &= "\n"
       ctx.emit_indent()
       ctx.source &= "end\n"
     
