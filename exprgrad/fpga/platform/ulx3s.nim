@@ -41,13 +41,22 @@ proc check(res: tuple[code: int, output: string]) =
     raise Ulx3sError(code: res.code, msg: res.output)
 
 method wrap*(platform: Ulx3s, circuit: Circuit): Circuit =
-  let clock = Logic.input("clk_25mhz")
-  result = Circuit.new([clock], {
+  let
+    clock = Logic.input("clk_25mhz")
+    buttons = Logic.input("btn", 7)
+  
+  var args: seq[(string, Logic)] = @[]
+  
+  template arg(input, value: Logic) =
+    if not input.is_nil:
+      args.add((input.name, value))
+  
+  arg(circuit.find_role(InputClock), clock)
+  arg(circuit.find_role(InputButtons), buttons)
+  
+  result = Circuit.new([clock, buttons], {
     "wifi_gpio0": Logic.constant(true),
-    "led": circuit.instantiate({
-      circuit.find_role(InputClock).name: clock,
-      "read_index": Logic.constant(16, 0)
-    }, 0)[0..7]
+    "led": circuit.instantiate(args, 0)[0..7]
   }, name="main")
 
 proc create_build_dir(base_name: string = "build"): string =

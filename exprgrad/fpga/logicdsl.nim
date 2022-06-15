@@ -86,7 +86,7 @@ type
     RisingEdge, FallingEdge
   
   InputRole* = enum
-    InputNone, InputClock, InputReset
+    InputNone, InputClock, InputReset, InputButtons
   
   Logic* = ref object
     args*: seq[Logic]
@@ -209,6 +209,12 @@ logic_unop(`-`, LogicNegate)
 
 proc select*(cond, a, b: Logic): Logic =
   result = Logic(kind: LogicSelect, args: @[cond, a, b])
+
+proc select*(branches: openArray[(Logic, Logic)], otherwise: Logic): Logic =
+  result = otherwise
+  for it in countdown(branches.len - 1, 0):
+    let (cond, value) = branches[it]
+    result = select(cond, value, result)
 
 proc select(value: Logic, cases: openArray[(Logic, Logic)], default: Logic): Logic =
   result = default
@@ -466,9 +472,9 @@ proc format_operator(logic: Logic, ctx: var Context): string =
     of LogicConcat: 
       result = "{"
       for it in countdown(logic.args.len - 1, 0):
+        result &= ctx[logic.args[it]]
         if it != 0:
           result &= ", "
-        result &= ctx[logic.args[it]]
       result &= "}"
     of LogicSlice:
       result = ctx[logic.args[0]] & "[" & $logic.slice.b & ":" & $logic.slice.a & "]"
@@ -667,6 +673,10 @@ proc save_verilog*(circuit: Circuit, path: string, platform: FpgaPlatform) =
 
 proc build*(circuit: Circuit, platform: FpgaPlatform): string =
   result = platform.build_verilog(circuit.to_verilog(platform))
+
+proc upload*(circuit: Circuit, platform: FpgaPlatform) =
+  let bitstream = platform.build_verilog(circuit.to_verilog(platform))
+  platform.upload_bitstream(bitstream)
 
 when is_main_module:
   let
