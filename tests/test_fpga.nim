@@ -26,7 +26,7 @@ test "matmul/passes":
   #c*[y, x] ++= a[y, it] * b[it, x] | (x, y, it)
   c*[y, x] ++= a[y, it] * b[it, x] | (y, x, it)
   let program = to_program([c.target("c", CompileFpga)])
-  program.scalar_type = ScalarType(bits: 16, is_fixed: true, fixed_point: 4)
+  program.scalar_type = ScalarType(bits: 16, is_fixed: true, fixed_point: 1)
   program.index_type = IndexType(bits: 16)
   program.compile()
   let target = program.targets["c"]
@@ -49,6 +49,7 @@ test "matmul/passes":
   
   let
     tensor_value = program_circuit.instantiate({
+      #"clock": clock,
       "clock": not buttons[0..0].debounce(clock, freq),
       "read_index": read_index
     }, 0)

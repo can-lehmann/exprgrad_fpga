@@ -19,7 +19,7 @@ import logicdsl
 
 proc count_bits*(value: int): int =
   result = 1
-  while (1 shl result) <= value:
+  while (1 shl result) < value:
     result += 1
 
 proc debounce*(input, clock: Logic,

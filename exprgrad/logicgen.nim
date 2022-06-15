@@ -16,7 +16,7 @@
 
 import std/[math, tables, sets]
 import ir
-import fpga/logicdsl, tensors
+import fpga/[logicdsl, utils], tensors
 
 proc `*`(a: Logic, b: uint): Logic =
   result = Logic.constant(0, 0)
@@ -49,9 +49,8 @@ type
     
     tensors: seq[Memory]
     regs: seq[Logic]
-    current_state: int
-    state_count: int
     
+    kernel_state: int
     program: Program
     kernel: Kernel
 
@@ -59,10 +58,6 @@ proc `[]`(ctx: Context, reg: RegId): Logic =
   result = ctx.regs[reg]
   if result.is_nil:
     raise GeneratorError(msg: $reg & " is not yet defined")
-
-proc alloc_state(ctx: var Context): int =
-  result = ctx.state_count
-  ctx.state_count += 1
 
 proc to_circuit(instrs: seq[Instr], ctx: var Context) =
   for instr in instrs:
@@ -130,7 +125,7 @@ proc to_circuit(instrs: seq[Instr], ctx: var Context) =
         ctx.tensors[instr.tensor].write(
           ctx.clock,
           RisingEdge,
-          Logic.constant(true),
+          ctx.state <=> Logic.constant(ctx.state.width, BiggestUint(ctx.kernel_state)),
           ctx[instr.args[0]],
           value
         )
@@ -140,16 +135,26 @@ proc to_circuit(instrs: seq[Instr], ctx: var Context) =
           let
             (iter_reg, step)  = instr.nested_loops[it]
             (start, stop) = (ctx[instr.args[2 * it]], ctx[instr.args[2 * it + 1]])
-            iter = Logic.reg(index_type.bits, initial = Logic.constant(index_type.bits, 0))
+            iter = Logic.reg(index_type.bits, initial = Logic.constant(index_type.bits, 0), name = "iter" & $it)
             inc = iter + Logic.constant(index_type.bits, BiggestUint(step))
             is_done = inc <=> stop
           var next = select(is_done, start, inc)
           if not is_inner_done.is_nil:
             next = select(is_inner_done, next, iter)
-          is_inner_done = is_done
+            is_inner_done = is_done and is_inner_done
+          else:
+            is_inner_done = is_done
           iter.update(ctx.clock, RisingEdge, next)
           ctx.regs[iter_reg] = iter
         instr.body.to_circuit(ctx)
+        
+        let
+          kernel_state = Logic.constant(ctx.state.width, BiggestUint(ctx.kernel_state))
+          goto_next_state = (ctx.state <=> kernel_state) and is_inner_done
+        ctx.next_state = select(goto_next_state,
+          Logic.constant(ctx.state.width, BiggestUint(ctx.kernel_state + 1)),
+          ctx.next_state
+        )
       of InstrDiv, InstrIndexDiv, InstrMod, InstrWrap, InstrSin, InstrCos,
          InstrExp, InstrPow, InstrSqrt, InstrLog, InstrLog10, InstrLog2, InstrLn:
         raise GeneratorError(msg: "Logic synthesis for " & $instr.kind & " is not yet implemented")
@@ -171,9 +176,10 @@ proc to_circuit*(target: Target,
     requires={StageTyped, StageLoops}
   )
   
+  let state = Logic.reg(count_bits(target.kernels.len + 1))
   var ctx = Context(
-    state: Logic.reg(0),
-    next_state: Logic.reg(0),
+    state: state,
+    next_state: state,
     clock: Logic.input("clock", role=InputClock),
     tensors: new_seq[Memory](program.tensors.len),
     program: program
@@ -192,8 +198,13 @@ proc to_circuit*(target: Target,
     let size = program.tensors[id].shape.prod()
     ctx.tensors[id] = Memory.new(program.scalar_type.bits, [size], initial=initial)
   
-  for kernel in target.kernels:
+  for it, kernel in target.kernels:
+    ctx.kernel_state = it
     kernel.to_circuit(ctx)
   
+  ctx.state.update(ctx.clock, RisingEdge, ctx.next_state)
+  
   let read_index = Logic.input("read_index", width = program.index_type.bits)
-  result = Circuit.new([ctx.clock, read_index], {"data": ctx.tensors[target.output][read_index]})
+  result = Circuit.new([ctx.clock, read_index], {
+    "data": ctx.tensors[target.output][read_index]
+  })

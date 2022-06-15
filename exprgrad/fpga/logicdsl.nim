@@ -96,7 +96,7 @@ type
         value*: BitString
       of LogicReg:
         event: UpdateEvent
-        reg_name: string
+        reg_name*: string
       of LogicInput:
         name*: string
         role*: InputRole
@@ -318,6 +318,7 @@ proc infer_width(logic: Logic, closed: var HashSet[Logic]): int =
         if width != expected[it]:
           raise new_exception(ValueError, "Width mismatch in register " & names[it] & ", expected width " & $expected[it] & ", but got " & $width)
     of LogicConcat, LogicMul:
+      logic.width = 0
       for arg in logic.args:
         logic.width += arg.infer_width(closed)
     of LogicSlice:
@@ -339,12 +340,16 @@ proc infer_width(logic: Logic, closed: var HashSet[Logic]): int =
       logic.memory.infer_widths(closed)
     of LOGIC_TRANSFORM_GATES, LOGIC_COND_GATES:
       var arg_width = 0
-      for arg in logic.args:
+      for it, arg in logic.args:
         let width = arg.infer_width(closed)
         if arg_width == 0:
           arg_width = width
         elif arg_width != width:
-          raise new_exception(ValueError, "All arguments of " & $logic.kind & " must have the same width.")
+          raise new_exception(ValueError,
+            "All arguments of " & $logic.kind & " must have the same width. " &
+            "Currently argument 0 of kind " & $logic.args[0].kind & " has width " & $arg_width &
+            " and argument " & $it & " of kind " & $arg.kind & " has width " & $width & "."
+          )
       if logic.kind in LOGIC_TRANSFORM_GATES:
         logic.width = arg_width
       else:
@@ -357,7 +362,11 @@ proc infer_width(logic: Logic, closed: var HashSet[Logic]): int =
         raise new_exception(ValueError, "Condition of select must have width 1.")
       logic.width = logic.args[1].infer_width(closed)
       if logic.width != logic.args[2].infer_width(closed):
-        raise new_exception(ValueError, "Options of select must have same width.")
+        raise new_exception(ValueError,
+          "Options of select must have same width. " &
+          "Currently the left branch has width " & $logic.args[1].width &
+          " and the right branch has width " & $logic.args[2].width & "."
+        )
   result = logic.width
   closed.incl(logic)
 

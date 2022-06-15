@@ -169,10 +169,10 @@ proc to_dot_graph(logic: Logic, ids: var LogicGraphIds, graph: var DotGraph): No
   var attrs: seq[(string, string)] = @[]
   case logic.kind:
     of LogicReg:
-      attrs = @{
-        "label": ($logic.kind)[len("Logic")..^1],
-        "shape": "box"
-      }
+      var label = "Reg"
+      if logic.reg_name.len > 0:
+        label &= " (" & logic.reg_name & ")"
+      attrs = @{"label": label, "shape": "box"}
     of LogicConst:
       attrs = @{
         "label": $logic.value,
