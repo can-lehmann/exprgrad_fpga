@@ -75,7 +75,7 @@ proc init*(_: typedesc[BitString], size: int, value: BiggestUint): BitString =
   for it in 0..<byte_count:
     result.bytes[it] = uint8((value shr (it * 8)) and 0xff)
 
-proc `$`(bit_string: BitString): string =
+proc `$`*(bit_string: BitString): string =
   result = $bit_string.size & "'b"
   for it in countdown(bit_string.bytes.len - 1, 0):
     for shift in countdown(min(7, bit_string.size - it * 8 - 1), 0):
@@ -495,7 +495,7 @@ proc format_operator(logic: Logic, ctx: var Context): string =
     of LogicShl, LogicShr:
       let op = case logic.kind:
         of LogicShl: "<<"
-        of LogicShr: "<<"
+        of LogicShr: ">>"
         else: "<unknown_shift>"
       result = "(" & ctx[logic.args[0]] & " " & op & " " & $logic.shift & ")"
     of LogicInvert:

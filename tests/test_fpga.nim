@@ -24,7 +24,7 @@ test "matmul/passes":
     a = input("a", [2, 3])
     b = input("b", [3, 2])
   #c*[y, x] ++= a[y, it] * b[it, x] | (x, y, it)
-  c*[y, x] ++= a[y, x] + b[x, y] | (y, x, it)
+  c*[y, x] ++= a[y, it] * b[it, x] | (y, x, it)
   let program = to_program([c.target("c", CompileFpga)])
   program.scalar_type = ScalarType(bits: 16, is_fixed: true, fixed_point: 4)
   program.index_type = IndexType(bits: 16)
@@ -57,7 +57,7 @@ test "matmul/passes":
       "value": select(buttons[2..2], output[8..<16], output[0..<8])
     })
   
-  write_file("output.gv", circuit.to_dot_graph())
+  write_file("output.gv", program_circuit.to_dot_graph())
   
   let platform = Ulx3s.new("ulx3s_v20.lpf")
   echo circuit.to_verilog(platform)
