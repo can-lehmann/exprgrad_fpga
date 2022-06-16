@@ -195,14 +195,35 @@ proc to_circuit*(target: Target, ctx: var Context) =
   for state in ctx.states.mitems:
     state = ctx.alloc_state()
   
-  ctx.next_state = select(ctx.state <=> Logic.constant(ctx.state.width, BiggestUint(ctx.init_state)),
-    Logic.constant(ctx.state.width, BiggestUint(ctx.states[0])),
-    ctx.next_state
-  )
   ctx.next_state = select(ctx.state <=> Logic.constant(ctx.state.width, BiggestUint(ctx.end_state)),
     Logic.constant(ctx.state.width, BiggestUint(ctx.wait_state)),
     ctx.next_state
   )
+  
+  let
+    is_init_state = ctx.state <=> Logic.constant(ctx.state.width, BiggestUint(ctx.init_state))
+    iter = Logic.reg(ctx.program.index_type.bits)
+    next_iter = iter + Logic.constant(ctx.program.index_type.bits, 1)
+  var max_len = 0
+  for id in target.tensors:
+    let def = ctx.program.tensors[id]
+    if def.kind == TensorResult:
+      let
+        len = def.shape.prod()
+        is_in_range = iter < Logic.constant(ctx.program.index_type.bits, BiggestUint(len))
+        zero = Logic.constant(ctx.program.scalar_type.bits, 0)
+      ctx.tensors[id].write(ctx.clock, RisingEdge, is_init_state and is_in_range, iter, zero)
+      if len > max_len:
+        max_len = len
+  let
+    is_done = next_iter <=> Logic.constant(ctx.program.index_type.bits, BiggestUint(max_len))
+    loop_restart = Logic.constant(ctx.program.index_type.bits, 0)
+  iter.update(ctx.clock, RisingEdge, select(is_init_state, select(is_done, loop_restart, next_iter), iter))
+  ctx.next_state = select(is_init_state,
+    select(is_done, Logic.constant(ctx.state.width, BiggestUint(ctx.states[0])), ctx.state),
+    ctx.next_state
+  )
+  
   for it, kernel in target.kernels:
     ctx.kernel_id = KernelId(it + 1)
     kernel.to_circuit(ctx)
