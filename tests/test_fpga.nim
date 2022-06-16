@@ -26,21 +26,21 @@ test "matmul/passes":
   output*[y, x] ++= hidden_relu[y, it] * param([4, 1])[it, x] | (y, x, it)
   output[y, x] ++= param([1])[x] | (y, x)
   output_sigmoid*{it} ++= select(output{it} <= 0.0, 0.1 * output{it}, output{it}) | it #1.0 / (1.0 + exp(-output{it})) | it
-  let pred = output_sigmoid.target("predict", CompileFpga)
+  let pred = output_sigmoid#.target("predict", CompileFpga)
   
   proc optim(param: var Fun, grad: Fun) =
     param{it} ++= -0.1 * grad{it} | it
   loss*[0] ++= sq(pred{it} - input("y", [4, 1]){it}) | it
-  let net = loss.target("loss", CompileFpga)#.backprop(optim).target("train", CompileFpga)
+  let net = loss.target("loss", CompileFpga).backprop(optim).target("train", CompileFpga)
   
   let program = to_program([net])
   program.scalar_type = ScalarType(bits: 16, is_fixed: true, fixed_point: 8)
   program.index_type = IndexType(bits: 16)
   program.compile()
-  let target = program.targets["loss"]
-  echo target
   
-  let program_circuit = target.to_circuit(program, {
+  echo program.targets["loss"]
+  
+  let program_circuit = program.to_circuit({
     "x": new_tensor([4, 2], @[float64 0, 0, 0, 1, 1, 0, 1, 1]),
     "y": new_tensor([4, 1], @[float64 0, 1, 1, 0])
   })
@@ -59,6 +59,7 @@ test "matmul/passes":
     tensor_value = program_circuit.instantiate({
       "clock": clock,
       #"clock": not buttons[0..0].debounce(clock, freq),
+      "read_tensor_id": Logic.constant(16, BiggestUint(int(program.targets["loss"].output) - 1)),
       "read_index": read_index
     }, 0)
     shown_value = select(buttons[1..1], read_index, tensor_value)

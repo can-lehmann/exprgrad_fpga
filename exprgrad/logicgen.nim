@@ -53,7 +53,13 @@ type
     tensors: seq[Memory]
     regs: seq[Logic]
     
-    kernel_state: int
+    states: seq[int]
+    state_count: int
+    init_state: int
+    end_state: int
+    wait_state: int
+    
+    kernel_id: KernelId
     program: Program
     kernel: Kernel
 
@@ -61,6 +67,10 @@ proc `[]`(ctx: Context, reg: RegId): Logic =
   result = ctx.regs[reg]
   if result.is_nil:
     raise GeneratorError(msg: $reg & " is not yet defined")
+
+proc alloc_state(ctx: var Context): int =
+  result = ctx.state_count
+  ctx.state_count += 1
 
 proc to_circuit(instrs: seq[Instr], ctx: var Context) =
   for instr in instrs:
@@ -127,7 +137,7 @@ proc to_circuit(instrs: seq[Instr], ctx: var Context) =
         ctx.tensors[instr.tensor].write(
           ctx.clock,
           RisingEdge,
-          ctx.state <=> Logic.constant(ctx.state.width, BiggestUint(ctx.kernel_state)),
+          ctx.state <=> Logic.constant(ctx.state.width, BiggestUint(ctx.states[ctx.kernel_id])),
           ctx[instr.args[0]],
           value
         )
@@ -150,11 +160,18 @@ proc to_circuit(instrs: seq[Instr], ctx: var Context) =
           ctx.regs[iter_reg] = iter
         instr.body.to_circuit(ctx)
         
+        var
+          next_kernel = KernelId(int(ctx.kernel_id) + 1)
+          next_kernel_state = ctx.end_state
+        
+        if int(next_kernel) - 1 < ctx.states.len:
+          next_kernel_state = ctx.states[next_kernel]
+        
         let
-          kernel_state = Logic.constant(ctx.state.width, BiggestUint(ctx.kernel_state))
+          kernel_state = Logic.constant(ctx.state.width, BiggestUint(ctx.states[ctx.kernel_id]))
           goto_next_state = (ctx.state <=> kernel_state) and is_inner_done
         ctx.next_state = select(goto_next_state,
-          Logic.constant(ctx.state.width, BiggestUint(ctx.kernel_state + 1)),
+          Logic.constant(ctx.state.width, BiggestUint(next_kernel_state)),
           ctx.next_state
         )
       of InstrDiv, InstrIndexDiv, InstrMod, InstrWrap, InstrSin, InstrCos,
@@ -168,17 +185,43 @@ proc to_circuit(instrs: seq[Instr], ctx: var Context) =
 proc to_circuit*(kernel: Kernel, ctx: var Context) =
   ctx.kernel = kernel
   ctx.regs = new_seq[Logic](kernel.regs.len)
-  
   kernel.setup.to_circuit(ctx)
 
-proc to_circuit*(target: Target,
-                 program: Program,
-                 inputs: openArray[(string, Tensor[float64])]): Circuit =
+proc to_circuit*(target: Target, ctx: var Context) =
+  ctx.init_state = ctx.alloc_state()
+  ctx.end_state = ctx.alloc_state()
+  
+  ctx.states = new_seq[int](target.kernels.len)
+  for state in ctx.states.mitems:
+    state = ctx.alloc_state()
+  
+  ctx.next_state = select(ctx.state <=> Logic.constant(ctx.state.width, BiggestUint(ctx.init_state)),
+    Logic.constant(ctx.state.width, BiggestUint(ctx.states[0])),
+    ctx.next_state
+  )
+  ctx.next_state = select(ctx.state <=> Logic.constant(ctx.state.width, BiggestUint(ctx.end_state)),
+    Logic.constant(ctx.state.width, BiggestUint(ctx.wait_state)),
+    ctx.next_state
+  )
+  for it, kernel in target.kernels:
+    ctx.kernel_id = KernelId(it + 1)
+    kernel.to_circuit(ctx)
+
+proc to_circuit*(program: Program, inputs: openArray[(string, Tensor[float64])]): Circuit =
   program.assert_gen("to_circuit",
     requires={StageTyped, StageLoops}
   )
   
-  let state = Logic.reg(count_bits(target.kernels.len + 1))
+  var
+    state_count = 1
+    used_tensors = init_hash_set[TensorId]()
+  for name, target in program.targets:
+    if target.compile_target == CompileFpga:
+      state_count += target.kernels.len + 2
+      used_tensors = used_tensors + target.tensors
+  
+  let state = Logic.reg(count_bits(state_count))
+  
   var ctx = Context(
     state: state,
     next_state: state,
@@ -187,12 +230,14 @@ proc to_circuit*(target: Target,
     program: program
   )
   
+  ctx.wait_state = ctx.alloc_state()
+  
   var initial_tensors = new_seq[Tensor[float64]](program.tensors.len)
   
   for (name, value) in inputs:
     initial_tensors[program.inputs[name]] = value
   
-  for id in target.tensors:
+  for id in used_tensors:
     let
       def = program.tensors[id]
       shape = def.shape # TODO: Infer shape
@@ -206,7 +251,7 @@ proc to_circuit*(target: Target,
         initial_tensors[id] = new_rand_tensor[float64](shape, def.init_range)
       of TensorResult, TensorCache: discard
   
-  for id in target.tensors:
+  for id in used_tensors:
     var initial: seq[BitString] = @[]
     if not initial_tensors[id].is_nil:
       let tensor = initial_tensors[id]
@@ -215,14 +260,29 @@ proc to_circuit*(target: Target,
     let size = program.tensors[id].shape.prod()
     ctx.tensors[id] = Memory.new(program.scalar_type.bits, [size], initial=initial)
   
-  for it, kernel in target.kernels:
-    ctx.kernel_state = it
-    kernel.to_circuit(ctx)
+  var target_states = init_table[string, int]()
+  for name, target in program.targets:
+    target.to_circuit(ctx)
+    target_states[name] = ctx.init_state
+  
+  ctx.next_state = select(ctx.state <=> Logic.constant(ctx.state.width, BiggestUint(ctx.wait_state)),
+    Logic.constant(ctx.state.width, BiggestUint(target_states["loss"])),
+    ctx.next_state
+  )
   
   ctx.state.update(ctx.clock, RisingEdge, ctx.next_state)
   
-  let read_index = Logic.input("read_index", width = program.index_type.bits)
+  let
+    read_index = Logic.input("read_index", width = program.index_type.bits)
+    read_tensor_id = Logic.input("read_tensor_id", width = program.index_type.bits)
   
-  result = Circuit.new([ctx.clock, read_index], {
-    "data": ctx.tensors[target.output][read_index]
-  })
+  var read_value = Logic.constant(program.scalar_type.bits, 0)
+  for name, target in program.targets:
+    if target.compile_target == CompileFpga and target.output != TensorId(0):
+      let tensor_id = Logic.constant(program.index_type.bits, BiggestUint(int(target.output) - 1))
+      read_value = select(read_tensor_id <=> tensor_id,
+        ctx.tensors[target.output][read_index],
+        read_value
+      )
+  
+  result = Circuit.new([ctx.clock, read_tensor_id, read_index], {"data": read_value})
