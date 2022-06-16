@@ -1590,6 +1590,8 @@ proc fuse_loops*(program: Program) =
   
   let shape_tokens = program.build_shape_tokens()
   for name, target in program.targets:
+    if target.compile_target == CompileFpga:
+      continue # TODO
     for kernel_it in 1..<target.kernels.len:
       let
         a = target.kernels[kernel_it - 1]

@@ -34,12 +34,15 @@ proc resize(logic: Logic, from_bits, to_bits: int): Logic =
 
 proc encode_scalar(value: float64, format: ScalarType): BitString =
   var bits = new_seq[bool](format.bits)
+  let unsigned_value = abs(value)
   for it, bit in bits.mpairs:
     if it < format.fixed_point:
-      bit = (int(value * float64(2 ^ (format.fixed_point - it))) and 1) != 0
+      bit = (int(unsigned_value * float64(2 ^ (format.fixed_point - it))) and 1) != 0
     else:
-      bit = (int(value) and (1 shl (it - format.fixed_point))) != 0
+      bit = (int(unsigned_value) and (1 shl (it - format.fixed_point))) != 0
   result = BitString.init(bits)
+  if value < 0:
+    result = -result
 
 type
   Context = object
@@ -80,8 +83,7 @@ proc to_circuit(instrs: seq[Instr], ctx: var Context) =
       of InstrAdd: binop(`+`)
       of InstrSub: binop(`-`)
       of InstrMul:
-        # TODO: Signed
-        res = ctx[instr.args[0]] * ctx[instr.args[1]]
+        res = signed_mul(ctx[instr.args[0]], ctx[instr.args[1]])
         if ctx.kernel.regs[instr.args[0]].typ.kind == TypeScalar:
           res = (res shr scalar_type.fixed_point)[0..<scalar_type.bits]
         else:
@@ -89,8 +91,8 @@ proc to_circuit(instrs: seq[Instr], ctx: var Context) =
       of InstrNegate:
         res = -ctx[instr.args[0]]
       of InstrEq: binop(`<=>`)
-      of InstrLt: binop(`<`) # TODO: Signed
-      of InstrLe: binop(`<=`) # TODO: Signed
+      of InstrLt: binop(signed_lt)
+      of InstrLe: binop(signed_le)
       of InstrAnd: binop(`and`)
       of InstrOr: binop(`or`)
       of InstrShape, InstrLen, InstrShapeLen:
@@ -185,14 +187,29 @@ proc to_circuit*(target: Target,
     program: program
   )
   
-  var input_ids = init_table[TensorId, Tensor[float64]]()
+  var initial_tensors = new_seq[Tensor[float64]](program.tensors.len)
+  
   for (name, value) in inputs:
-    input_ids[program.inputs[name]] = value
+    initial_tensors[program.inputs[name]] = value
+  
+  for id in target.tensors:
+    let
+      def = program.tensors[id]
+      shape = def.shape # TODO: Infer shape
+    case def.kind:
+      of TensorInput:
+        if initial_tensors[id].is_nil:
+          raise GeneratorError()
+      of TensorRandom:
+        initial_tensors[id] = new_rand_tensor[float64](shape, def.random_range)
+      of TensorParam:
+        initial_tensors[id] = new_rand_tensor[float64](shape, def.init_range)
+      of TensorResult, TensorCache: discard
   
   for id in target.tensors:
     var initial: seq[BitString] = @[]
-    if id in input_ids:
-      let tensor = input_ids[id]
+    if not initial_tensors[id].is_nil:
+      let tensor = initial_tensors[id]
       for it in 0..<tensor.len:
         initial.add(tensor{it}.encode_scalar(program.scalar_type))
     let size = program.tensors[id].shape.prod()
@@ -205,6 +222,7 @@ proc to_circuit*(target: Target,
   ctx.state.update(ctx.clock, RisingEdge, ctx.next_state)
   
   let read_index = Logic.input("read_index", width = program.index_type.bits)
+  
   result = Circuit.new([ctx.clock, read_index], {
     "data": ctx.tensors[target.output][read_index]
   })

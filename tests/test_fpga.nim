@@ -20,21 +20,29 @@ import exprgrad/fpga/platform/ulx3s
 import ../tools/test_framework
 
 test "matmul/passes":
-  let
-    a = input("a", [2, 3])
-    b = input("b", [3, 2])
-  #c*[y, x] ++= a[y, it] * b[it, x] | (x, y, it)
-  c*[y, x] ++= a[y, it] * b[it, x] | (y, x, it)
-  let program = to_program([c.target("c", CompileFpga)])
-  program.scalar_type = ScalarType(bits: 16, is_fixed: true, fixed_point: 1)
+  hidden*[y, x] ++= input("x", [4, 2])[y, it] * param([2, 4])[it, x] | (y, x, it)
+  hidden[y, x] ++= param([4])[x] | (y, x)
+  hidden_relu*{it} ++= select(hidden{it} <= 0.0, 0.1 * hidden{it}, hidden{it}) | it
+  output*[y, x] ++= hidden_relu[y, it] * param([4, 1])[it, x] | (y, x, it)
+  output[y, x] ++= param([1])[x] | (y, x)
+  output_sigmoid*{it} ++= select(output{it} <= 0.0, 0.1 * output{it}, output{it}) | it #1.0 / (1.0 + exp(-output{it})) | it
+  let pred = output_sigmoid.target("predict", CompileFpga)
+  
+  proc optim(param: var Fun, grad: Fun) =
+    param{it} ++= -0.1 * grad{it} | it
+  loss*[0] ++= sq(pred{it} - input("y", [4, 1]){it}) | it
+  let net = loss.target("loss", CompileFpga)#.backprop(optim).target("train", CompileFpga)
+  
+  let program = to_program([net])
+  program.scalar_type = ScalarType(bits: 16, is_fixed: true, fixed_point: 8)
   program.index_type = IndexType(bits: 16)
   program.compile()
-  let target = program.targets["c"]
+  let target = program.targets["loss"]
   echo target
   
   let program_circuit = target.to_circuit(program, {
-    "a": new_tensor([2, 3], @[float64 1, 2, 3, 4, 5, 6]),
-    "b": new_tensor([3, 2], @[float64 1, 2, 3, 4, 5, 6])
+    "x": new_tensor([4, 2], @[float64 0, 0, 0, 1, 1, 0, 1, 1]),
+    "y": new_tensor([4, 1], @[float64 0, 1, 1, 0])
   })
   
   let
@@ -49,13 +57,13 @@ test "matmul/passes":
   
   let
     tensor_value = program_circuit.instantiate({
-      #"clock": clock,
-      "clock": not buttons[0..0].debounce(clock, freq),
+      "clock": clock,
+      #"clock": not buttons[0..0].debounce(clock, freq),
       "read_index": read_index
     }, 0)
-    output = select(buttons[1..1], read_index, tensor_value)
+    shown_value = select(buttons[1..1], read_index, tensor_value)
     circuit = Circuit.new([clock, buttons], {
-      "value": select(buttons[2..2], output[8..<16], output[0..<8])
+      "value": select(buttons[2..2], shown_value[8..<16], shown_value[0..<8])
     })
   
   write_file("output.gv", program_circuit.to_dot_graph())

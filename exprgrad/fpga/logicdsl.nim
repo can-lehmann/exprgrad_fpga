@@ -21,8 +21,8 @@ type LogicKind* = enum
   LogicConcat, LogicSlice, LogicInstance, LogicRead,
   LogicShl, LogicShr,
   LogicAnd, LogicOr, LogicInvert,
-  LogicAdd, LogicSub, LogicMul, LogicNegate,
-  LogicEq, LogicLt, LogicLe,
+  LogicAdd, LogicSub, LogicMul, LogicSignedMul, LogicNegate,
+  LogicEq, LogicLt, LogicLe, LogicSignedLt, LogicSignedLe,
   LogicSelect
 
 const
@@ -37,17 +37,19 @@ const
     LogicAdd, LogicSub, LogicNegate, LogicShl, LogicShr
   }
   
-  LOGIC_COND_GATES = {LogicEq, LogicLt, LogicLe}
+  LOGIC_COND_GATES = {LogicEq, LogicLt, LogicLe, LogicSignedLt, LogicSignedLe}
   
   LOGIC_COMB_GATES = {
     LogicBitwise, LogicInstance,
     LogicConcat, LogicSlice, LogicRead,
     LogicShl, LogicShr,
     LogicAnd, LogicOr, LogicInvert,
-    LogicAdd, LogicSub, LogicMul, LogicNegate,
-    LogicEq, LogicLt, LogicLe,
+    LogicAdd, LogicSub, LogicMul, LogicSignedMul, LogicNegate,
+    LogicEq, LogicLt, LogicLe, LogicSignedLt, LogicSignedLe,
     LogicSelect
   }
+  
+  LOGIC_SIGNED_GATES = { LogicSignedLt, LogicSignedLe, LogicSignedMul }
 
 type BitString* = object
   size*: int
@@ -80,6 +82,23 @@ proc `$`*(bit_string: BitString): string =
   for it in countdown(bit_string.bytes.len - 1, 0):
     for shift in countdown(min(7, bit_string.size - it * 8 - 1), 0):
       result &= ["0", "1"][ord(((bit_string.bytes[it] shr shift) and 1) != 0)]
+
+proc `not`*(bit_string: BitString): BitString =
+  result = bit_string
+  for value in result.bytes.mitems:
+    value = not value
+
+proc `-`*(bit_string: BitString): BitString =
+  result = not bit_string
+  var
+    carry = true
+    it = 0
+  while carry and it < result.bytes.len:
+    let res = uint(result.bytes[it]) + 1
+    result.bytes[it] = uint8(res and 0xff)
+    if (res shr 8) == 0:
+      carry = false
+    it += 1
 
 type
   UpdateEvent* = enum
@@ -189,6 +208,10 @@ logic_binop(`or`, LogicOr)
 logic_binop(`<=>`, LogicEq)
 logic_binop(`<`, LogicLt)
 logic_binop(`<=`, LogicLe)
+
+logic_binop(signed_mul, LogicSignedMul)
+logic_binop(signed_lt, LogicSignedLt)
+logic_binop(signed_le, LogicSignedLe)
 
 proc `shl`*(a: Logic, b: int): Logic =
   if b == 0:
@@ -317,7 +340,7 @@ proc infer_width(logic: Logic, closed: var HashSet[Logic]): int =
         let width = arg.infer_width(closed)
         if width != expected[it]:
           raise new_exception(ValueError, "Width mismatch in register " & names[it] & ", expected width " & $expected[it] & ", but got " & $width)
-    of LogicConcat, LogicMul:
+    of LogicConcat, LogicMul, LogicSignedMul:
       logic.width = 0
       for arg in logic.args:
         logic.width += arg.infer_width(closed)
@@ -489,18 +512,22 @@ proc format_operator(logic: Logic, ctx: var Context): string =
       result = ctx[logic.args[0]] & "[" & $logic.slice.b & ":" & $logic.slice.a & "]"
     of LogicRead:
       result = ctx[logic.memory] & "[" & ctx[logic.args[0]] & "]"
-    of LogicAnd, LogicOr, LogicAdd, LogicSub, LogicMul, LogicEq, LogicLt, LogicLe:
+    of LogicAnd, LogicOr, LogicAdd, LogicSub, LogicMul, LogicSignedMul,
+       LogicEq, LogicLt, LogicLe, LogicSignedLt, LogicSignedLe:
       let op = case logic.kind:
         of LogicAnd: "&"
         of LogicOr: "|"
         of LogicAdd: "+"
         of LogicSub: "-"
-        of LogicMul: "*"
+        of LogicMul, LogicSignedMul: "*"
         of LogicEq: "=="
-        of LogicLt: "<"
-        of LogicLe: "<="
+        of LogicLt, LogicSignedLt: "<"
+        of LogicLe, LogicSignedLe: "<="
         else: "<unknown_operator>"
-      result = "(" & ctx[logic.args[0]] & " " & op & " " & ctx[logic.args[1]] & ")"
+      if logic.kind in LOGIC_SIGNED_GATES:
+        result = "($signed(" & ctx[logic.args[0]] & ") " & op & " $signed(" & ctx[logic.args[1]] & "))"
+      else:
+        result = "(" & ctx[logic.args[0]] & " " & op & " " & ctx[logic.args[1]] & ")"
     of LogicShl, LogicShr:
       let op = case logic.kind:
         of LogicShl: "<<"
