@@ -59,6 +59,8 @@ type
     end_state: int
     wait_state: int
     
+    mainloop: bool
+    
     kernel_id: KernelId
     program: Program
     kernel: Kernel
@@ -82,6 +84,7 @@ proc to_circuit(instrs: seq[Instr], ctx: var Context) =
     let
       scalar_type = ctx.program.scalar_type
       index_type = ctx.program.index_type
+      is_current_state = ctx.state <=> Logic.constant(ctx.state.width, BiggestUint(ctx.states[ctx.kernel_id]))
     
     case instr.kind:
       of InstrIndex:
@@ -134,13 +137,7 @@ proc to_circuit(instrs: seq[Instr], ctx: var Context) =
         var value = ctx[instr.args[1]]
         if instr.kind == InstrWrite:
           value = value + ctx.tensors[instr.tensor][ctx[instr.args[0]]]
-        ctx.tensors[instr.tensor].write(
-          ctx.clock,
-          RisingEdge,
-          ctx.state <=> Logic.constant(ctx.state.width, BiggestUint(ctx.states[ctx.kernel_id])),
-          ctx[instr.args[0]],
-          value
-        )
+        ctx.tensors[instr.tensor].write(ctx.clock, RisingEdge, is_current_state, ctx[instr.args[0]], value)
       of InstrNestedLoops:
         var is_inner_done: Logic = nil
         for it in countdown(instr.nested_loops.len - 1, 0):
@@ -156,7 +153,7 @@ proc to_circuit(instrs: seq[Instr], ctx: var Context) =
             is_inner_done = is_done and is_inner_done
           else:
             is_inner_done = is_done
-          iter.update(ctx.clock, RisingEdge, next)
+          iter.update(ctx.clock, RisingEdge, select(is_current_state, next, iter))
           ctx.regs[iter_reg] = iter
         instr.body.to_circuit(ctx)
         
@@ -167,9 +164,7 @@ proc to_circuit(instrs: seq[Instr], ctx: var Context) =
         if int(next_kernel) - 1 < ctx.states.len:
           next_kernel_state = ctx.states[next_kernel]
         
-        let
-          kernel_state = Logic.constant(ctx.state.width, BiggestUint(ctx.states[ctx.kernel_id]))
-          goto_next_state = (ctx.state <=> kernel_state) and is_inner_done
+        let goto_next_state = is_current_state and is_inner_done
         ctx.next_state = select(goto_next_state,
           Logic.constant(ctx.state.width, BiggestUint(next_kernel_state)),
           ctx.next_state
@@ -195,42 +190,49 @@ proc to_circuit*(target: Target, ctx: var Context) =
   for state in ctx.states.mitems:
     state = ctx.alloc_state()
   
-  ctx.next_state = select(ctx.state <=> Logic.constant(ctx.state.width, BiggestUint(ctx.end_state)),
-    Logic.constant(ctx.state.width, BiggestUint(ctx.wait_state)),
-    ctx.next_state
-  )
+  if ctx.mainloop:
+    ctx.next_state = select(ctx.state <=> Logic.constant(ctx.state.width, BiggestUint(ctx.end_state)),
+      Logic.constant(ctx.state.width, BiggestUint(ctx.wait_state)),
+      ctx.next_state
+    )
   
-  let
-    is_init_state = ctx.state <=> Logic.constant(ctx.state.width, BiggestUint(ctx.init_state))
-    iter = Logic.reg(ctx.program.index_type.bits)
-    next_iter = iter + Logic.constant(ctx.program.index_type.bits, 1)
-  var max_len = 0
-  for id in target.tensors:
-    let def = ctx.program.tensors[id]
-    if def.kind == TensorResult:
-      let
-        len = def.shape.prod()
-        is_in_range = iter < Logic.constant(ctx.program.index_type.bits, BiggestUint(len))
-        zero = Logic.constant(ctx.program.scalar_type.bits, 0)
-      ctx.tensors[id].write(ctx.clock, RisingEdge, is_init_state and is_in_range, iter, zero)
-      if len > max_len:
-        max_len = len
-  let
-    is_done = next_iter <=> Logic.constant(ctx.program.index_type.bits, BiggestUint(max_len))
-    loop_restart = Logic.constant(ctx.program.index_type.bits, 0)
-  iter.update(ctx.clock, RisingEdge, select(is_init_state, select(is_done, loop_restart, next_iter), iter))
-  ctx.next_state = select(is_init_state,
-    select(is_done, Logic.constant(ctx.state.width, BiggestUint(ctx.states[0])), ctx.state),
-    ctx.next_state
-  )
+  let is_init_state = ctx.state <=> Logic.constant(ctx.state.width, BiggestUint(ctx.init_state))
+  if ctx.mainloop:
+    let
+      iter = Logic.reg(ctx.program.index_type.bits)
+      next_iter = iter + Logic.constant(ctx.program.index_type.bits, 1)
+    var max_len = 0
+    for id in target.tensors:
+      let def = ctx.program.tensors[id]
+      if def.kind == TensorResult:
+        let
+          len = def.shape.prod()
+          is_in_range = iter < Logic.constant(ctx.program.index_type.bits, BiggestUint(len))
+          zero = Logic.constant(ctx.program.scalar_type.bits, 0)
+        ctx.tensors[id].write(ctx.clock, RisingEdge, is_init_state and is_in_range, iter, zero)
+        if len > max_len:
+          max_len = len
+    let
+      is_done = next_iter <=> Logic.constant(ctx.program.index_type.bits, BiggestUint(max_len))
+      loop_restart = Logic.constant(ctx.program.index_type.bits, 0)
+    iter.update(ctx.clock, RisingEdge, select(is_init_state, select(is_done, loop_restart, next_iter), iter))
+    ctx.next_state = select(is_init_state,
+      select(is_done, Logic.constant(ctx.state.width, BiggestUint(ctx.states[0])), ctx.state),
+      ctx.next_state
+    )
+  else:
+    ctx.next_state = select(is_init_state,
+      Logic.constant(ctx.state.width, BiggestUint(ctx.states[0])),
+      ctx.next_state
+    )
   
   for it, kernel in target.kernels:
     ctx.kernel_id = KernelId(it + 1)
     kernel.to_circuit(ctx)
 
-proc to_circuit*(program: Program, inputs: openArray[(string, Tensor[float64])]): Circuit =
+proc to_circuit*(program: Program, inputs: openArray[(string, Tensor[float64])], mainloop: bool = false): Circuit =
   program.assert_gen("to_circuit",
-    requires={StageTyped, StageLoops}
+    requires={StageTensors, StageTyped, StageLoops}
   )
   
   var
@@ -248,6 +250,7 @@ proc to_circuit*(program: Program, inputs: openArray[(string, Tensor[float64])])
     next_state: state,
     clock: Logic.input("clock", role=InputClock),
     tensors: new_seq[Memory](program.tensors.len),
+    mainloop: mainloop,
     program: program
   )
   
@@ -283,11 +286,19 @@ proc to_circuit*(program: Program, inputs: openArray[(string, Tensor[float64])])
   
   var target_states = init_table[string, int]()
   for name, target in program.targets:
-    target.to_circuit(ctx)
-    target_states[name] = ctx.init_state
+    if target.compile_target == CompileFpga:
+      target.to_circuit(ctx)
+      target_states[name] = ctx.init_state
   
-  ctx.next_state = select(ctx.state <=> Logic.constant(ctx.state.width, BiggestUint(ctx.wait_state)),
-    Logic.constant(ctx.state.width, BiggestUint(target_states["loss"])),
+  
+  var preferred_target_state = -1
+  for name, state in target_states:
+    preferred_target_state = state
+    break
+  
+  ctx.next_state = select(
+    ctx.state <=> Logic.constant(ctx.state.width, BiggestUint(ctx.wait_state)),
+    Logic.constant(ctx.state.width, BiggestUint(preferred_target_state)),
     ctx.next_state
   )
   

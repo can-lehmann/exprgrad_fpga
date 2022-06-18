@@ -128,7 +128,7 @@ proc stringify(instr: Instr, regs: var seq[string], level: int): string =
         if it == 0:
           result &= " "
         else:
-          result &= "\n" & make_indent(level) & make_indent(name.len + 1, 1)
+          result &= ",\n" & make_indent(level) & make_indent(name.len + 1, 1)
         result &= regs[iter]
         result &= " in " & regs[instr.args[it * 2]] & " to " & regs[instr.args[it * 2 + 1]]
       result &= ":\n"

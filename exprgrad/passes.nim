@@ -1216,7 +1216,7 @@ proc eval*(instrs: seq[Instr],
     else:
       result = true
 
-proc matches(static_shape, shape: seq[int]): bool =
+proc matches*(static_shape, shape: seq[int]): bool =
   if static_shape.len == 0:
     result = true
   elif static_shape.len == shape.len:

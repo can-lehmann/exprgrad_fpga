@@ -328,6 +328,15 @@ macro serializable*(args: typed): untyped =
   result = new_stmt_list([decls, impls])
 
 serializable([KernelId, RegId, TensorId, LoopId])
+
+proc load*(stream: var ReadStream, obj: var (RegId, int)) =
+  stream.load(obj[0])
+  stream.load(obj[1])
+
+proc store*(stream: var WriteStream, obj: (RegId, int)) =
+  stream.store(obj[0])
+  stream.store(obj[1])
+
 serializable([TypeKind, Type])
 serializable([LoopMode, ParallelClosure, GpuIndex])
 serializable([InstrKind, Instr])
@@ -339,12 +348,12 @@ serializable([ShapeConstrKind, ShapeConstraint])
 serializable([GenKind, Generator])
 serializable([KernelGradient, Kernel, CompileTarget, Target])
 serializable([TensorKind, TensorDef])
-serializable([ScalarType, Stage, Program])
+serializable([ScalarType, IndexType, Stage, Program])
 
 proc store*[T](stream: var WriteStream, model: Model[T]) =
   stream.store(model.is_nil)
   if not model.is_nil:
-    stream.store(model.program)
+    stream.store(model.source)
     stream.store(model.params)
     stream.store(model.caches)
 
@@ -355,13 +364,14 @@ proc load*[T](stream: var ReadStream, model: var Model[T]) =
     model = nil
   else:
     var
-      program: Program
+      source: Program
       params: Table[TensorId, Tensor[T]]
       caches: Table[TensorId, Tensor[T]]
-    stream.load(program)
+    stream.load(source)
     stream.load(params)
     stream.load(caches)
-    model = new_model[T](program, params, caches)
+    let program = source.clone()
+    model = new_model[T](source, program, params, caches)
 
 proc save*[T](value: T, path: string) =
   var stream = open_write_stream(path)
