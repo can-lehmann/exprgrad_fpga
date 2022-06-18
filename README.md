@@ -1,433 +1,91 @@
-# Exprgrad
+# Exprgrad FPGA Prototype
 
-Exprgrad is an experimental deep learning framework for Nim based on a differentiable array programming language.
-Exprgrad makes creating and training neural networks easy: 
+A prototype for an FPGA backend for [exprgrad](https://github.com/can-lehmann/exprgrad).
 
-```nim
-import std/random
-import exprgrad, exprgrad/layers/[base, dnn]
-randomize(10)
+## How does it work?
 
-let
-  net = input("x")
-    .dense(2, 4).leaky_relu() # 1st Layer
-    .dense(4, 1).sigmoid()    # 2nd Layer
-    .target("predict")
-    .mse(input("y"))          # Loss
-    .target("loss")
-    .backprop(gradient_descent.make_opt(rate=0.1)) # Train
-    .target("train")
-  model = compile[float32](net)
+The basic idea is to compile instructions without side-effects directly to combinatorial logic while tensor reads/writes and loops are compiled to sequential logic.
+Multiple kernels are handled by a global state machine which controls which kernel is currently active.
+Scalar values are represented by fixed point numbers.
 
-let
-  train_x = new_tensor([4, 2], @[float32 0, 0, 0, 1, 1, 0, 1, 1])
-  train_y = new_tensor([4, 1], @[float32 0, 1, 1, 0])
+Let's look at how a simple matrix multiplication example is compiled to a hardware description.
 
-for epoch in 0..<5000:
-  model.apply("train", {"x": train_x, "y": train_y})
-
-echo model.call("predict", {"x": train_x})
-```
-
-Because exprgrad is based on a custom differentiable programming language, we do not need to rely on its built in layers.
-Instead we can also specify the same model in terms of scalar operations on tensors.
+First a user implements the matrix multiplication operation using exprgrad's domain specific language.
+The resulting model (= program containing the kernel and inputs, parameters, ...) is saved to disk.
 
 ```nim
-# Layer 1
-hidden*[y, x] ++= input("x")[y, it] * param([2, 4])[it, x] | (y, x, it)
-hidden[y, x] ++= param([4])[x] | (y, x)
-hidden_relu*{it} ++= select(hidden{it} <= 0.0, 0.1 * hidden{it}, hidden{it}) | it
-# Layer 2
-output*[y, x] ++= hidden_relu[y, it] * param([4, 1])[it, x] | (y, x, it)
-output[y, x] ++= param([1])[x] | (y, x)
-output_sigmoid*{it} ++= 1.0 / (1.0 + exp(-output{it})) | it
-let pred = output_sigmoid.target("predict")
-loss*[0] ++= sq(pred{it} - input("y"){it}) | it # Loss
+import exprgrad, exprgrad/io/serialize
 
-proc optim(param: var Fun, grad: Fun) =
-  param{it} ++= -0.1 * grad{it} | it
-
-let net = loss.target("loss").backprop(optim).target("train") # Train
-```
-
-Since exprgrad's compiler is able to derive any program written in its domain specific language, we do not need to specify a backwards pass.
-This allows you to iterate on custom layers quickly, while avoiding errors in the gradient computation.
-The model is optimized and compiled using a JIT compiler, enabling fast execution times.
-All layers provided by exprgrad are also implemented in the same way, allowing you to customize them easily.
-
-## Installation
-
-**Warning:** Exprgrad is still very early in its development.
-Although all shown examples already work, bugs are expected and important features for training large models (especially Multithreading and GPU support) might still be missing.
-Please report any issues you might encounter.
-
-### Ubuntu
-
-```bash
-$ sudo apt install llvm-13-dev
-$ nimble install exprgrad
-```
-
-**Note:** Your version of Ubuntu may not have the `llvm-13-dev` package in its repositories.
-Follow the instructions at [apt.llvm.org](https://apt.llvm.org/) to install the required repository.
-
-### Fedora 36
-
-```bash
-$ sudo dnf install llvm13-devel
-$ nimble install exprgrad
-```
-
-### Fedora 35
-
-```bash
-$ sudo dnf install llvm-devel
-$ nimble install exprgrad
-```
-
-## Documentation
-
-### Language
-
-Exprgrad's custom differentiable array programming language is used to specify all layers.
-It is a custom language which differs greatly from Nim both in syntax and semantics.
-Kernels/layers written in exprgrad's language are embedded in Nim programs and created using the `++=` macro.
-
-The language does not have functions, procedures or structured control flow.
-Instead each program is a single expression inside a series of implicitly specified nested loops.
-A simple program which multiplies two matrices looks like this:
-
-```nim
 proc matmul(a, b: Fun): Fun =
-  result[y, x] ++= a[y, it] * b[it, x] | (y, x, it)
+  result[y, x] ++= a[y, it] * b[it, x] | (x, y, it)
+
+let model = compile[float32](matmul(input("a"), input("b")).target("matmul"))
+model.save("matmul.bin")
 ```
 
-The same program in Nim would look like this:
+The user now calls the `model2fpga` program found in the tools folder.
 
-```nim
-proc `*`*[T](a, b: Tensor[T]): Tensor[T] =
-  result = new_tensor[T]([a.shape[0], b.shape[1]])
-  for y in 0..<result.shape[0]:
-    for it in 0..<a.shape[1]:
-      for x in 0..<result.shape[1]:
-        result[y, x] += a[y, it] * b[it, x]
+
+```bash
+./model2fpga \
+  -i a 2x3 "1,2,3,4,5,6"  `# Input tensor a`\
+  -i b 3x2 "1,2,3,4,5,6"  `# Input tensor b`\
+  -S "8.8"                `# Fixed point format for Scalar type`\
+  -I 16                   `# Number of bits in Index type`\
+  -p                      `# Print IR to stdout`\
+  -g graph.gv             `# Output circuit graph`\
+  -f                      `# Flash bitstream to FPGA using fujprog`\
+  -t matmul               `# Name of target to compile`\
+  -l ulx3s.lpf            `# LPF file for nextpnr`\
+  matmul.bin              `# Path to model`\
 ```
 
-As you can see, the program in exprgrad's domain-specific language is basically equivalent to the last line of the Nim program.
-The shape of the output tensor and the iteration ranges of all loops are inferred automatically.
-
-In contrast to Nim, exprgrad's type system is very simple as it includes only four types.
-
-| Name       | Purpose                                            |
-| ---------- | -------------------------------------------------- |
-| `Scalar`   | Floating point value. Is differentiable.           |
-| `Index`    | Integer value. Used to index into tensors.         |
-| `Boolean`  | Boolean value. Only used in `select` instructions. |
-| `Array[T]` | Fixed size array with items of type T.             |
-
-Tensors may be accessed using the `[]` and `{}` operators.
-While `[]` allows you index into each dimension, `{}` gives you direct access to the data of the tensor.
-Because `{}` does not allow exprgrad to infer tensor shapes in all cases, `[]` should always be preferred over `{}`. 
-
-```nim
-proc identity*(a: Fun): Fun = result{it} ++= a{it} | it
-```
-
-Literals for each type are available.
-Note that exprgrad does not have automatic type conversions.
-`Scalar` literals therefore must include a point (`2.0` instead of `2`) to differentiate them from `Index` literals.
-
-```nim
-proc double*(a: Fun): Fun =
-  result{it} ++= a{it} * 2.0 | it
-```
-
-Variables from Nim may be included as static values using the `@` operator.
-Only variables of type `int`, `float64` and `bool` can be included.
-
-```nim
-proc `*`*(a: Fun, factor: float64): Fun =
-  result{it} ++= a{it} * @factor | it
-```
-
-Conditionals can be emulated using the `select` instruction.
-There is no guarantee that both branches are executed.
-
-```nim
-proc relu*(inp: Fun): Fun =
-  result{it} ++= select(inp{it} >= 0.0, inp{it}, 0.0) | it
-```
-
-An expression may contain multiple statements separated using `;`.
-This allows you to define variables using the `let` statement and use them later on.
-
-```nim
-proc tanh*(inp: Fun): Fun =
-  result{it} ++= (
-    let a = exp(inp{it});
-    let b = exp(-inp{it});
-    (a - b) / (a + b)
-  ) | it
-```
-
-If exprgrad is not able to infer the shape of a tensor, it can be explicitly specified using `with_shape` or `copy_shape`.
-The argument to the `with_shape` macro must be of the form `[dim0, dim1, dim2, ...]` where each dimension is a valid expression in exprgrad's language.
-
-```nim
-proc upsample2*(images: Fun): Fun =
-  result[image, y, x, chan] ++= images[image, x div 2, y div 2, chan] | (image, y, x, chan)
-  result.with_shape([
-    images.shape[0],
-    images.shape[1] * 2,
-    images.shape[2] * 2,
-    images.shape[3]
-  ])
-```
-
-If the output tensor is not yet declared, the `*` operator can be added after the tensor's name to declare it.
-
-```nim
-y*{it} ++= input("x"){it} * 2.0 | it
-```
-
-Sometimes you might want to use a custom gradient implementation instead of the one automatically generated by exprgrad.
-This is especially useful for ensuring numerical stability or improving performance.
-Inside the `custom_grad` attribute, gradient tensors are referred to using the `grad(tensor)` instruction.
-
-```nim
-identity*{x} ++= inp{x} | x do:
-  custom_grad:
-    grad(inp){x} ++= inp{x} * grad(identity){x} | x
-```
-
-More examples can be found in the `exprgrad/layers/base.nim` and `exprgrad/layers/dnn.nim` modules.
-
-#### Instructions
-
-In addition to the basic operators `+`, `-`, `*`, `/`, `div`, `mod`, `==`, `<`, `>`, `<=` and `>=`, the following instructions are supported:
-
-| Instruction          | Description                                                       | 
-| -------------------- | ----------------------------------------------------------------- |
-| `sq(x)`              | Computes the square of `x`                                        |
-| `min(a, b)`          | Returns the minimum of `a` and `b`                                |
-| `max(a, b)`          | Returns the maximum of `a` and `b`                                |
-| `select(cond, a, b)` | Returns `a` if `cond` is true else returns `b`                    |
-| `to_scalar(x)`       | Converts `x` to a `Scalar` value                                  |
-| `to_index(x)`        | Converts `x` to an `Index` value                                  |
-| `sin(x)`             | Returns the sine of `x`                                           |
-| `cos(x)`             | Returns the cosine of `x`                                         |
-| `exp(x)`             | Computes `e ^ x`                                                  |
-| `ln(x)`              | Computes the natural logarithm of `x`                             |
-| `pow(a, b)`          | Computes `a ^ b`                                                  |
-| `sqrt(x)`            | Computes the square root of `x`                                   |
-| `wrap(x, y)`         | Computes `(x mod y + y) mod y` (`∈ [0, y) ∩ ℤ`)                   |
-| `tensor.shape[dim]`  | Returns the size of dimension `dim` of `tensor`                   |
-| `tensor.len`         | Returns the length of `tensor`                                    |
-| `epoch()`            | Returns the current epoch stored in `Model.epoch`.                |
-| `arr.len`            | Returns the length of the given array.                            |
-| `arr[index]`         | Gets the element stored at `index` in the array.                  |
-
-If you cannot find the instruction you are looking for, please open an issue.
-
-### Computation Graphs
-
-Neural networks are represented as computation graphs.
-Each computation graph has a set of inputs which are provided to it at run time.
-They may be images the model is supposed to classify or a text whose sentiment it is supposed to predict.
-Each neural network also has a set of parameters.
-These are the internal values which are learned during backpropagation.
-Exprgrad refers to the output of a given computation as a target.
-A target might be the actual output of the network itself, but also the loss with respect to a training dataset or the action of updating the parameters of the network using gradient descent.
-In order to compute the value of a target, a series of kernels (layers) is executed.
-Additionally a computation graph may include a set of caches used to save the internal state of an optimizer and randomized tensors used as inputs to dropout layers.
-
-```nim
-proc param*(shape: openArray[int],
-            init_range: HSlice[float64, float64] = -0.1..0.1): Fun
-```
-
-Creates a new parameter with the given shape.
-Each parameter is randomly initialized with a uniform distribution in the range `init_range` after model compilation.
-
-```nim
-proc input*(name: string, shape: openArray[int] = []): Fun
-```
-
-Creates a new input with the given name.
-The sizes of static dimensions may be specified to enable compiler optimizations.
-If a shape is specified unknown dimensions should have the size `-1`.
-
-Example: `input("x", [-1, 28, 28, 1])`
-
-```nim
-proc target*(fun: Fun, name: string): Fun
-```
-
-Creates a new target with the given name.
-Targets may be called using the `Model.call`, `Model.apply` or `Model.fit` procedures.
-
-```nim
-proc backwards*(fun: Fun): Fun
-```
-
-Lazily computes the gradients for all parameters of the given computation graph (`fun`) with respect to the given loss value `fun`.
-Unused gradients are not computed.
-
-```nim
-proc optimize*(gradients: Fun,
-               params: HashSet[Fun],
-               optim: proc (param: var Fun, grad: Fun)): Fun
-proc optimize*(gradients: Fun, optim: proc (param: var Fun, grad: Fun)): Fun
-```
-
-Optimizes the given parameters using the given optimizer.
-Optimizers may be created using `make_opt`.
-The `Fun.params` procedure may be used to find all parameters of a computation graph.
-
-```nim
-proc backprop*(loss: Fun, optim: proc (param: var Fun, grad: Fun)): Fun
-```
-
-Computes the gradients for all parameters of `loss` and optimizes them using the given optimizer.
-Optimizers may be created using `make_opt`.
-Shortcut for `loss.backwards().optimize(optim)`.
-
-```nim
-proc reshape*(fun: Fun, shape: openArray[int]): Fun
-```
-
-Changes the shape of the given tensor.
-Each reshape may include at most one unknown dimension, which should have the value `-1`.
-The length of the tensor must stay constant.
-
-Example: `x.reshape([-1, 28 * 28])`
-
-```nim
-proc cond*(branches: openArray[(string, Fun)],
-           otherwise: Fun = nil): Fun
-```
-
-Selects one of the inputs depending on which target should be evaluated.
-Useful for building complex architectures such as GANs.
-
-```nim
-macro make_opt*(opt: typed, args: varargs[untyped]): untyped
-```
-
-Create an optimizer from procedure `opt` by setting all optional arguments of `opt`.
-The first two arguments to `opt` are the parameter to optimize and its gradient.
-They must have the types `var Fun` and `Fun`.
-`opt` may not return a value.
-
-Example: `adam.make_opt(0.01, beta1=0.5)`
-
-### Models
-
-```nim
-proc compile*[T](graphs: varargs[Fun]): Model[T]
-```
-
-Compiles a computation graph to a model.
-The generic parameter `T` may be one of `float32` or `float64`.
-
-```nim
-proc call*[T](model: Model[T],
-              target: string,
-              args: openArray[(string, Tensor[T])]): Tensor[T]
-```
-
-Computes the value of `target` for the inputs `args`.
-
-```nim
-proc apply*[T](model: Model[T],
-               target: string,
-               args: openArray[(string, Tensor[T])])
-```
-
-Computes `target` and discards its value.
-This procedure is useful for optimizing simple models.
-In most cases `Model.fit` should be preferred since it can train in batches and automatically increments `model.epoch`.
-
-```nim
-proc fit*[T](model: Model[T],
-             target: string,
-             args: openArray[(string, Tensor[T])],
-             batch_size: int = 32)
-```
-
-Computes the given target for all batches from the inputs `args`.
-If the sample count is not divisible by the `batch_size`, the remaining samples are not used in the training process.
-This will likely be fixed in the future.
-
-```nim
-proc emit_ir*[T](model: Model[T]): string
-```
-
-Emits intermediate representation for all targets of `model`.
-This is mainly used for debugging purposes.
-
-### IO
-
-Exprgrad provides an io module which can load commonly used datasets and save/load models to/from disk.
-
-#### Saving and Loading Models
-
-Models can be saved by calling the `save` procedure from `io/serialize`.
-`load_model` is used to load a model from a file.
-Since `load_model` loads the intermediate representation for the model from the file and compiles it using the JIT compiler, it is **not** recommended to load models from untrusted sources.
-
-```nim
-let model = load_model[float32]("model.bin")
-model.save("model.bin")
-```
-
-### Tensors
-
-Exprgrad currently uses a simple tensor library providing basic functions aimed at preprocessing datasets for training.
-Tensors can be created using `new_tensor` and `new_rand_tensor`, printed using `$` and accessed using the `[]` and `{}` operators.
-Refer to `test/test_tensors.nim` for more examples of how to use the tensor library.
-
-## References
-
-Exprgrad borrows many successful concepts from other projects on array and differentiable programming languages.
-
-- [Halide](https://halide-lang.org/)
-- [Zygote.jl](https://github.com/FluxML/Zygote.jl)
-- [LLVM](https://llvm.org/)
-
-## Contributing
-
-Currently exprgrad is still very early in its development.
-All examples shown above already work, but there are still many possibilities for improvement:
-
-- Improved multithreading
-- GPU Support
-- More automatic optimizations (tiling, loop fusion, ...)
-- ...
-
-If you would like to contribute to exprgrad, the following tasks might be of interest to you:
-
-- Integrate with existing tensor libraries
-- Image loading and saving
-- Improve batching in `fit` procedure
-- Document the tensors module
-
-### Project Structure
-
-The following diagram shows a simplified compilation pipeline which displays the functions of the different modules (files in `exprgrad/`) of exprgrad's compiler.
+The `model2fpga` tool now loads the saved model from disk and runs a slightly modified version of exprgrad's standard compilation pass pipeline.
+The resulting intermediate representation looks like this:
 
 ```
-          parser       passes       llvmgen
-Nim AST –––––––––> IR ––––––––> IR –––––––––> LLVM IR ––> Machine Code 
+tensor1 = input(a)
+tensor2 = input(b)
+matmul tensor0:
+  kernel:
+    nested_loops reg0 in 0 to 2,
+                 reg1 in 0 to 3,
+                 reg3 in 0 to 2:
+      reg2 = read[tensor1]((reg1 + (reg0 * 3)))
+      reg4 = read[tensor2]((reg3 + (reg1 * 2)))
+      write[tensor0]((reg3 + (reg0 * 2)), (reg2 * reg4))
 ```
 
-Exprgrad's compiler uses a custom intermediate representation (IR).
-All program transformations including the automatic differentiation and optimization are performed within this representation.
-It is defined in the module `ir.nim`.
-The current compilation pipeline is defined in the `compile` procedure of the module `model.nim`.
-All program transformations are currently defined in `passes.nim`.
-Exprgrad uses the LLVM C-API through its own wrapper.
-The LLVM IR generator and JIT compiler are defined in `llvmgen.nim`.
+This intermediate representation is now used to generate a circuit consisting of registers, memories and combinatorial logic.
+The circuit is represented as a graph where each edge represents a wire between two components.
+A circuit may contain cycles when at least one component in the cycle is a register or memory.
+Cycles within combinatorial logic are not allowed.
+
+A loop is implemented as a counter which increments when the inner loop has finished iterating over its domain.
+If a loop is the innermost loop, it increements on each clock cycle if the kernel is active.
+When all loops of a kernel have iterated over their domain, the next kernel may perform its computation.
+
+In this case the resulting circuit graph looks like this:
+
+![Circuit Graph](docs/matmul_circuit.svg)
+
+In order to allow the user to interact with the model while it is running on an FPGA, a series of wrapper circuits is applied to the model circuit.
+The resulting composite of circuits is now compiled to a verilog file where is each module corresponds to one subcircuit.
+
+The resulting Verilog code can be seen [here](docs/matmul.v).
+
+## Future Work
+
+These are some features which are not implemented in this prototype, but are important for the final implementation in exprgrad itself.
+
+- High level circuit intermediate representation
+- Parallel execution of kernels
+- Storing tensors in external RAM
+- Scheduling language
+  - Loop unrolling
+  - Loop fusion (exprgrad already implements this for CPU/GPU)
+  - Pipelining
+  - Lookup tables
 
 ## License
 
