@@ -13,25 +13,26 @@
 # limitations under the License.
 
 import std/random
-import exprgrad, exprgrad/layers/[base, dnn]
+import exprgrad, exprgrad/io/serialize, exprgrad/layers/[base, dnn]
 randomize(10)
 
 let
   net = input("x")
     .dense(2, 4).leaky_relu() # 1st Layer
-    .dense(4, 1).sigmoid()    # 2nd Layer
+    .dense(4, 1).leaky_relu() # 2nd Layer
     .target("predict")
     .mse(input("y"))          # Loss
     .target("loss")
     .backprop(gradient_descent.make_opt(rate=0.1)) # Train
     .target("train")
-  model = compile[float32](net)
+  model = compile[float64](net)
 
 let
-  train_x = new_tensor([4, 2], @[float32 0, 0, 0, 1, 1, 0, 1, 1])
-  train_y = new_tensor([4, 1], @[float32 0, 1, 1, 0])
+  train_x = new_tensor([4, 2], @[float64 0, 0, 0, 1, 1, 0, 1, 1])
+  train_y = new_tensor([4, 1], @[float64 0, 1, 1, 0])
 
 for epoch in 0..<5000:
   model.apply("train", {"x": train_x, "y": train_y})
 
 echo model.call("predict", {"x": train_x})
+model.save("model.bin")

@@ -1,6 +1,7 @@
 # Exprgrad FPGA Prototype
 
-A prototype for an FPGA backend for [exprgrad](https://github.com/can-lehmann/exprgrad).
+A prototype of an FPGA backend for [exprgrad](https://github.com/can-lehmann/exprgrad).
+It was written in about two weeks in order to assess the feasability of an efficient FPGA backend for exprgrad and explore architectures for its implementation.
 
 ## How does it work?
 
@@ -70,9 +71,52 @@ In this case the resulting circuit graph looks like this:
 ![Circuit Graph](docs/matmul_circuit.svg)
 
 In order to allow the user to interact with the model while it is running on an FPGA, a series of wrapper circuits is applied to the model circuit.
-The resulting composite of circuits is now compiled to a verilog file where is each module corresponds to one subcircuit.
+The resulting composite of circuits is now compiled to a verilog file where each module corresponds to one subcircuit.
 
 The resulting Verilog code can be seen [here](docs/matmul.v).
+
+## XOR Example
+
+The prototype backend is already able to synthesize logic circuits for a small subset of exprgrad programs.
+To demonstrate this, a simple XOR neural network built from **unmodified** exprgrad dnn layers is compiled to a logic circuit.
+
+```nim
+import std/random
+import exprgrad, exprgrad/io/serialize, exprgrad/layers/[base, dnn]
+randomize(10)
+
+let
+  net = input("x")
+    .dense(2, 4).leaky_relu() # 1st Layer
+    .dense(4, 1).leaky_relu() # 2nd Layer
+    .target("predict")
+    .mse(input("y"))          # Loss
+    .target("loss")
+    .backprop(gradient_descent.make_opt(rate=0.1)) # Train
+    .target("train")
+  model = compile[float64](net)
+
+let
+  train_x = new_tensor([4, 2], @[float64 0, 0, 0, 1, 1, 0, 1, 1])
+  train_y = new_tensor([4, 1], @[float64 0, 1, 1, 0])
+
+for epoch in 0..<5000:
+  model.apply("train", {"x": train_x, "y": train_y})
+
+echo model.call("predict", {"x": train_x})
+model.save("model.bin")
+```
+
+The network is similar to the one shown in the exprgrad README, except for that it uses a ReLU after the 2nd layer insted of a sigmoid activation.
+Sigmoids are not supported by the prototype backend, since a general solution for exponential functions would require the automatic creation of lookup tables which is outside of the scope of this prototype.
+
+Compiling this model using
+
+```bash
+./../../tools/model2fpga -i x 4x2 "0,0,0,1,1,0,1,1" -S "8.8" -I 16 -p -v output.v -f -t predict -l ulx3s.lpf model.bin
+```
+
+results in the network correctly predicting the inputs directly on the FPGA.
 
 ## Future Work
 
@@ -87,9 +131,20 @@ These are some features which are not implemented in this prototype, but are imp
   - Pipelining
   - Lookup tables
 
+## Development Board
+
+The FPGA backend prototype is currently only compatible with the [ULX3S](https://github.com/emard/ulx3s) development board and the ECP5 85 FPGA.
+It uses the yosys/nextpnr/fujprog toolchain.
+
+## Contributing
+
+This project does not accept contributions, since it is a prototype intended for learning about how an actual implementation of FPGA support in exprgrad might look like.
+Please contribute to the [main exprgrad repository](https://github.com/can-lehmann/exprgrad) instead.
+If you are interested in working on FPGA support for exprgrad, please [open an issue on the main exprgrad repository](https://github.com/can-lehmann/exprgrad/issues/new).
+
 ## License
 
-Copyright 2021 Can Joshua Lehmann
+Copyright 2021 - 2022 Can Joshua Lehmann
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.

@@ -230,7 +230,11 @@ proc to_circuit*(target: Target, ctx: var Context) =
     ctx.kernel_id = KernelId(it + 1)
     kernel.to_circuit(ctx)
 
-proc to_circuit*(program: Program, inputs: openArray[(string, Tensor[float64])], mainloop: bool = false): Circuit =
+proc to_circuit*(program: Program,
+                 inputs: openArray[(string, Tensor[float64])],
+                 params: Table[TensorId, Tensor[float64]],
+                 caches: Table[TensorId, Tensor[float64]],
+                 mainloop: bool = false): Circuit =
   program.assert_gen("to_circuit",
     requires={StageTensors, StageTyped, StageLoops}
   )
@@ -272,8 +276,14 @@ proc to_circuit*(program: Program, inputs: openArray[(string, Tensor[float64])],
       of TensorRandom:
         initial_tensors[id] = new_rand_tensor[float64](shape, def.random_range)
       of TensorParam:
-        initial_tensors[id] = new_rand_tensor[float64](shape, def.init_range)
-      of TensorResult, TensorCache: discard
+        if id in params:
+          initial_tensors[id] = params[id]
+        else:
+          initial_tensors[id] = new_rand_tensor[float64](shape, def.init_range)
+      of TensorCache:
+        if id in params:
+          initial_tensors[id] = caches[id]
+      of TensorResult: discard
   
   for id in used_tensors:
     var initial: seq[BitString] = @[]

@@ -14,10 +14,12 @@
 
 # Unit-tests for compiling exprgrad kernels to an FPGA
 
-import std/[tables]
+import std/[tables, random]
 import exprgrad, exprgrad/[ir, irprint, model, passes, parser, logicgen, fpga/logicdsl, fpga/utils, graphics/dotgraph]
 import exprgrad/fpga/platform/ulx3s
 import ../tools/test_framework
+
+randomize(10)
 
 test "matmul/passes":
   hidden*[y, x] ++= input("x", [4, 2])[y, it] * param([2, 4])[it, x] | (y, x, it)
@@ -25,7 +27,13 @@ test "matmul/passes":
   hidden_relu*{it} ++= select(hidden{it} <= 0.0, 0.1 * hidden{it}, hidden{it}) | it
   output*[y, x] ++= hidden_relu[y, it] * param([4, 1])[it, x] | (y, x, it)
   output[y, x] ++= param([1])[x] | (y, x)
-  output_sigmoid*{it} ++= select(output{it} <= 0.0, 0.1 * output{it}, output{it}) | it #1.0 / (1.0 + exp(-output{it})) | it
+  output_sigmoid*{it} ++= (
+    let x = output{it} + 0.5;
+    select(x <= 0.0,
+      0.1 * x,
+      select(x >= 1.0, 0.9 + 0.1 * x, x)
+    )
+  ) | it #1.0 / (1.0 + exp(-output{it})) | it
   let pred = output_sigmoid#.target("predict", CompileFpga)
   
   proc optim(param: var Fun, grad: Fun) =
@@ -42,30 +50,9 @@ test "matmul/passes":
   
   let program_circuit = program.to_circuit({
     "x": new_tensor([4, 2], @[float64 0, 0, 0, 1, 1, 0, 1, 1]),
-    "y": new_tensor([4, 1], @[float64 0, 1, 1, 0])
+    "y": new_tensor([4, 1], @[float64 0, 1, 1, 1])
   })
   
-  let
-    freq = 25_000_000
-    clock = Logic.input("clock", role=InputClock)
-    buttons = Logic.input("buttons", 7, role=InputButtons)
-    read_index = Logic.reg(16, Logic.constant(16, 0))
-  read_index.update(clock, RisingEdge, select({
-    buttons[5..5].detect(clock, RisingEdge): read_index - Logic.constant(16, 1),
-    buttons[6..6].detect(clock, RisingEdge): read_index + Logic.constant(16, 1)
-  }, read_index))
-  
-  let
-    tensor_value = program_circuit.instantiate({
-      "clock": clock,
-      #"clock": not buttons[0..0].debounce(clock, freq),
-      "read_tensor_id": Logic.constant(16, BiggestUint(int(program.targets["loss"].output) - 1)),
-      "read_index": read_index
-    }, 0)
-    shown_value = select(buttons[1..1], read_index, tensor_value)
-    circuit = Circuit.new([clock, buttons], {
-      "value": select(buttons[2..2], shown_value[8..<16], shown_value[0..<8])
-    })
   
   write_file("output.gv", program_circuit.to_dot_graph())
   

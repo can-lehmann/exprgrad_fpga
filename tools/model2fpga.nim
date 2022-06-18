@@ -136,7 +136,7 @@ when is_main_module:
   program.compile()
   
   let
-    program_circuit = program.to_circuit(args.inputs)
+    program_circuit = program.to_circuit(args.inputs, model.params, model.caches)
     platform = Ulx3s.new(args.lpf_path)
     circuit = program_circuit.wrap_ui(program, args.targets.peek())
   
