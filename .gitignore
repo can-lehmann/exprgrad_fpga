@@ -14,6 +14,7 @@ examples/matmul/ulx3s.lpf
 benchmarks/conv2/conv2
 benchmarks/conv2/nimcache
 benchmarks/matmul/matmul_gpu
+tests/ulx3s_v20.lpf
 tests/test_tensors
 tests/test_model
 tests/test_serialize
