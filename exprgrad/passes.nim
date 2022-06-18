@@ -2301,3 +2301,99 @@ proc validate*(program: Program) =
   for name, target in program.targets:
     for kernel in target.kernels:
       kernel.validate()
+
+type ConstValue = object
+  is_const: bool
+  case typ: TypeKind:
+    of TypeBoolean: boolean_val: bool
+    of TypeIndex: index_val: int
+    of TypeScalar: scalar_val: float64
+    else: discard
+
+proc prop_constants(instrs: var seq[Instr], consts: var seq[ConstValue], regs: var seq[Register]) =
+  var setup: seq[Instr] = @[]
+  for instr in instrs.mitems:
+    if instr.body.len > 0:
+      instr.body.prop_constants(consts, regs)
+    
+    template binop(op) =
+      let
+        a = consts[instr.args[0]]
+        b = consts[instr.args[1]]
+      if a.is_const and b.is_const:
+        if a.typ == TypeIndex:
+          consts[instr.res] = ConstValue(
+            is_const: true,
+            typ: TypeIndex,
+            index_val: op(a.index_val, b.index_val)
+          )
+        elif a.typ == TypeScalar:
+          consts[instr.res] = ConstValue(
+            is_const: true,
+            typ: TypeScalar,
+            scalar_val: op(a.scalar_val, b.scalar_val)
+          )
+    
+    case instr.kind:
+      of InstrIndex: consts[instr.res] = ConstValue(is_const: true, typ: TypeIndex, index_val: instr.index_lit)
+      of InstrScalar: consts[instr.res] = ConstValue(is_const: true, typ: TypeScalar, scalar_val: instr.scalar_lit)
+      of InstrBoolean: consts[instr.res] = ConstValue(is_const: true, typ: TypeBoolean, boolean_val: instr.boolean_lit)
+      of InstrAdd: binop(`+`)
+      of InstrSub: binop(`-`)
+      of InstrMul: binop(`*`)
+      of InstrDiv:
+        if not consts[instr.args[0]].is_const and
+           consts[instr.args[1]].is_const and
+           consts[instr.args[1]].typ == TypeScalar:
+          let factor = regs.alloc()
+          setup.add(Instr(kind: InstrScalar,
+            scalar_lit: 1.0 / consts[instr.args[1]].scalar_val,
+            res: factor
+          ))
+          instr = Instr(kind: InstrMul,
+            args: @[instr.args[0], factor],
+            res: instr.res
+          )
+      of InstrToScalar:
+        if consts[instr.args[0]].is_const and consts[instr.args[0]].typ == TypeIndex:
+          consts[instr.res] = ConstValue(
+            is_const: true,
+            typ: TypeScalar,
+            scalar_val: float64(consts[instr.args[0]].index_val)
+          )
+      of InstrToIndex:
+        if consts[instr.args[0]].is_const and consts[instr.args[0]].typ == TypeScalar:
+          consts[instr.res] = ConstValue(
+            is_const: true,
+            typ: TypeIndex,
+            index_val: int(consts[instr.args[0]].scalar_val)
+          )
+      else: discard
+    
+    if instr.kind notin {InstrIndex, InstrScalar, InstrBoolean} and
+       instr.res != RegId(0) and
+       consts[instr.res].is_const:
+      let value = consts[instr.res]
+      case value.typ:
+        of TypeIndex: instr = Instr(kind: InstrIndex, index_lit: value.index_val, res: instr.res)
+        of TypeScalar: instr = Instr(kind: InstrScalar, scalar_lit: value.scalar_val, res: instr.res)
+        of TypeBoolean: instr = Instr(kind: InstrBoolean, boolean_lit: value.boolean_val, res: instr.res)
+        else: discard
+  
+  if setup.len > 0:
+    instrs.insert(setup)
+
+proc prop_constants(kernel: Kernel) =
+  var consts = new_seq[ConstValue](kernel.regs.len)
+  kernel.setup.prop_constants(consts, kernel.regs)
+  kernel.expr.instrs.prop_constants(consts, kernel.regs)
+
+proc prop_constants*(program: Program) =
+  program.assert_pass("prop_constants",
+    requires={},
+    preserves = ALL_STAGES - {StageTyped}
+  )
+  
+  for name, target in program.targets:
+    for kernel in target.kernels:
+      kernel.prop_constants()

@@ -69,6 +69,7 @@ proc compile*(program: Program) =
   program.unfold_loop_bounds()
   program.inline_conditions()
   program.inline_loops()
+  program.prop_constants()
   program.lift_invariants()
   program.collect_closures()
   program.infer_types()
@@ -375,6 +376,8 @@ proc zero_result_tensor[T](model: Model[T], target: CompileTarget, tensor_id: Te
       model.cpu.tensors[tensor_id].fill_zero()
     of CompileGpu:
       model.gpu.tensors[tensor_id].fill(T(0))
+    of CompileFpga:
+      raise new_exception(ValueError, "Unable to zero tensor on FPGA")
 
 proc call_jit[T](model: Model[T], target_name: string): Tensor[T] =
   let fn = get_proc[proc (model: ModelPtr[T]) {.cdecl.}](model.jit, "target_" & target_name)

@@ -78,7 +78,7 @@ The resulting Verilog code can be seen [here](docs/matmul.v).
 ## XOR Example
 
 The prototype backend is already able to synthesize logic circuits for a small subset of exprgrad programs.
-To demonstrate this, a simple XOR neural network built from **unmodified** exprgrad dnn layers is compiled to a logic circuit.
+To demonstrate this, a simple XOR neural network built from **unmodified** exprgrad DNN layers is compiled to a logic circuit.
 
 ```nim
 import std/random
@@ -107,13 +107,13 @@ echo model.call("predict", {"x": train_x})
 model.save("model.bin")
 ```
 
-The network is similar to the one shown in the exprgrad README, except for that it uses a ReLU after the 2nd layer insted of a sigmoid activation.
-Sigmoids are not supported by the prototype backend, since a general solution for exponential functions would require the automatic creation of lookup tables which is outside of the scope of this prototype.
+The network is similar to the one shown in the exprgrad README, except for that it uses a ReLU after the 2nd layer instead of a sigmoid activation.
+Sigmoids are not supported by the prototype backend, since a general solution for synthesizing exponential functions would require automatically creating lookup tables which (while it is simple) is outside of the scope of this prototype.
 
 Compiling this model using
 
 ```bash
-./../../tools/model2fpga -i x 4x2 "0,0,0,1,1,0,1,1" -S "8.8" -I 16 -p -v output.v -f -t predict -l ulx3s.lpf model.bin
+./model2fpga -i x 4x2 "0,0,0,1,1,0,1,1" -S "8.8" -I 16 -p -v output.v -f -t predict -l ulx3s.lpf model.bin
 ```
 
 results in the network correctly predicting the inputs directly on the FPGA.

@@ -86,9 +86,9 @@ test "blur":
     (image[x] + image[x + 1] + image[x + 2]) / 3.0
   ) | (x in 0..<res.shape[0]) # TODO: Infer loop bounds
   let model = compile[float32](res.target("res"))
-  check model.call("res", {
+  check (model.call("res", {
     "image": new_tensor([7], @[float32 1, 2, 3, 2, 1, 0, -1]),
-  }) == new_tensor([5], @[float32 2, float32(7/3), 2, 1, 0])
+  }) - new_tensor([5], @[float32 2, float32(7/3), 2, 1, 0])).squares().sum() < 0.0001
 
 test "blur_center":
   let image = input("image")
@@ -96,9 +96,9 @@ test "blur_center":
     (image[x - 1] + image[x] + image[x + 1]) / 3.0
   ) | (x in 1..<(image.shape[0] - 1)) # TODO: Infer loop bounds
   let model = compile[float32](res.target("res"))
-  check model.call("res", {
+  check (model.call("res", {
     "image": new_tensor([7], @[float32 1, 2, 3, 2, 1, 0, -1]),
-  }) == new_tensor([5], @[float32 2, float32(7/3), 2, 1, 0])
+  }) - new_tensor([5], @[float32 2, float32(7/3), 2, 1, 0])).squares().sum() < 0.0001
 
 test "blur_offset":
   let image = input("image")
@@ -107,9 +107,9 @@ test "blur_offset":
   ) | (x in 0..<(image.shape[0] - 2)) # TODO: Infer loop bounds
   res.with_shape([image.shape[0]])
   let model = compile[float32](res.target("res"))
-  check model.call("res", {
+  check (model.call("res", {
     "image": new_tensor([7], @[float32 1, 2, 3, 2, 1, 0, -1]),
-  }) == new_tensor([7], @[float32 0, 2, float32(7/3), 2, 1, 0, 0])
+  }) - new_tensor([7], @[float32 0, 2, float32(7/3), 2, 1, 0, 0])).squares().sum() < 0.0001
 
 test "shape":
   let inp = input("x")
