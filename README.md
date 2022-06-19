@@ -118,7 +118,7 @@ Compiling this model using
 
 results in the network correctly predicting the inputs directly on the FPGA.
 
-### Trainig on the FPGA
+### Training on the FPGA
 
 Since exprgrad expands the backwards passes for training neural networks to a series of kernels, it is also possible to train the network directly on the FPGA.
 
