@@ -31,6 +31,7 @@ proc wrap_ui*(circuit: Circuit, program: Program, output_target: string, freq: i
   let
     tensor_value = circuit.instantiate({
       "clock": clock,
+      "target": Logic.constant(program.index_type.bits, BiggestUint(0)),
       #"clock": not buttons[0..0].debounce(clock, freq),
       "read_tensor_id": Logic.constant(program.index_type.bits, BiggestUint(int(program.targets[output_target].output) - 1)),
       "read_index": read_index
