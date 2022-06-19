@@ -45,7 +45,7 @@ proc load_model_descr(path: string): ModelDescr =
 
 type
   ActionKind = enum
-    ActionPrintIr, ActionVerilog, ActionGraph, ActionBitstream, ActionFlash
+    ActionPrintIr, ActionRawVerilog, ActionVerilog, ActionGraph, ActionBitstream, ActionFlash
   
   Action = object
     path: string
@@ -58,6 +58,7 @@ type
     index_type: IndexType
     targets: HashSet[string]
     lpf_path: string
+    mainloop: bool
     actions: seq[Action]
 
 proc parse_args(): Args =
@@ -91,6 +92,7 @@ proc parse_args(): Args =
         of "-f": result.actions.add(Action(kind: ActionFlash))
         of "-p": result.actions.add(Action(kind: ActionPrintIr))
         of "-v": result.actions.add(Action(kind: ActionVerilog, path: take_param(it)))
+        of "-V": result.actions.add(Action(kind: ActionRawVerilog, path: take_param(it)))
         of "-g": result.actions.add(Action(kind: ActionGraph, path: take_param(it)))
         of "-b": result.actions.add(Action(kind: ActionBitstream, path: take_param(it)))
         of "-S":
@@ -106,6 +108,7 @@ proc parse_args(): Args =
         of "-I": result.index_type = IndexType(bits: take_param(it).parse_int())
         of "-t": result.targets.incl(take_param(it))
         of "-l": result.lpf_path = take_param(it)
+        of "-m": result.mainloop = true
         else:
           raise new_exception(ValueError, "Invalid option " & param)
     else:
@@ -134,9 +137,9 @@ when is_main_module:
     program.tensors[id].shape = input.shape
   
   program.compile()
-  
+  echo program
   let
-    program_circuit = program.to_circuit(args.inputs, model.params, model.caches)
+    program_circuit = program.to_circuit(args.inputs, model.params, model.caches, mainloop=args.mainloop)
     platform = Ulx3s.new(args.lpf_path)
     circuit = program_circuit.wrap_ui(program, args.targets.peek())
   
@@ -148,6 +151,8 @@ when is_main_module:
         write_file(action.path, program_circuit.to_dot_graph())
       of ActionVerilog:
         circuit.save_verilog(action.path, platform)
+      of ActionRawVerilog:
+        write_file(action.path, program_circuit.to_verilog())
       of ActionBitstream:
         let path = circuit.build(platform)
         copy_file(path, action.path)

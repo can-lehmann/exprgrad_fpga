@@ -14,6 +14,13 @@ examples/xor/xor
 examples/xor/model.bin
 examples/xor/output.v
 examples/xor/ulx3s.lpf
+examples/train_xor/train_xor
+examples/train_xor/model.bin
+examples/train_xor/output.v
+examples/train_xor/ulx3s.lpf
+examples/train_xor/ulx3s.config
+examples/train_xor/ulx3s.bit
+examples/train_xor/circuit.json
 tests/ulx3s_v20.lpf
 tests/test_tensors
 tests/test_model

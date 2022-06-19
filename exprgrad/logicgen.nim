@@ -300,18 +300,20 @@ proc to_circuit*(program: Program,
       target.to_circuit(ctx)
       target_states[name] = ctx.init_state
   
+  let target = Logic.input("target", width = program.index_type.bits)
+  var target_state = Logic.constant(ctx.state.width, BiggestUint(ctx.wait_state))
   
-  var preferred_target_state = -1
+  var it = 0
   for name, state in target_states:
-    preferred_target_state = state
-    break
+    target_state = select(
+      target <=> Logic.constant(program.index_type.bits, BiggestUint(it)),
+      Logic.constant(ctx.state.width, BiggestUint(state)),
+      target_state
+    )
+    it += 1
   
-  ctx.next_state = select(
-    ctx.state <=> Logic.constant(ctx.state.width, BiggestUint(ctx.wait_state)),
-    Logic.constant(ctx.state.width, BiggestUint(preferred_target_state)),
-    ctx.next_state
-  )
-  
+  let is_wait_state = ctx.state <=> Logic.constant(ctx.state.width, BiggestUint(ctx.wait_state))
+  ctx.next_state = select(is_wait_state, target_state, ctx.next_state)
   ctx.state.update(ctx.clock, RisingEdge, ctx.next_state)
   
   let
@@ -327,4 +329,4 @@ proc to_circuit*(program: Program,
         read_value
       )
   
-  result = Circuit.new([ctx.clock, read_tensor_id, read_index], {"data": read_value})
+  result = Circuit.new([ctx.clock, target, read_tensor_id, read_index], {"data": read_value})

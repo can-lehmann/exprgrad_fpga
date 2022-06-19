@@ -696,13 +696,16 @@ proc to_verilog(circuit: Circuit, ctx: var Context) =
   ctx.emit_indent()
   ctx.source &= "endmodule\n"
 
-proc to_verilog*(circuit: Circuit, platform: FpgaPlatform): string =
-  let main = platform.wrap(circuit)
+proc to_verilog*(main: Circuit): string =
   main.infer_widths()
   var ctx = Context()
   for circuit in main.find_circuits():
     circuit.to_verilog(ctx)
   result = ctx.source
+
+proc to_verilog*(circuit: Circuit, platform: FpgaPlatform): string =
+  let main = platform.wrap(circuit)
+  result = main.to_verilog()
 
 proc save_verilog*(circuit: Circuit, path: string, platform: FpgaPlatform) =
   write_file(path, circuit.to_verilog(platform))

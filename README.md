@@ -118,6 +118,45 @@ Compiling this model using
 
 results in the network correctly predicting the inputs directly on the FPGA.
 
+### Trainig on the FPGA
+
+Since exprgrad expands the backwards passes for training neural networks to a series of kernels, it is also possible to train the network directly on the FPGA.
+
+The 16bit fixed point number representation used in the previous examples is however not precise enough.
+Switching to 24bit fixed point numbers with 16bits after the point solves this issue.
+Additionally a "mainloop" must be added to the program in order to enable executing targets multiple times.
+
+```bash
+./../../tools/model2fpga \
+  -i x 4x2 "0,0,0,1,1,0,1,1" \
+  -i y 4x1 "0,1,1,0" \
+  -S "8.16"                 `# Use 24bit fixed point numbers`\
+  -I 16 \
+  -p \
+  -V output.v               `# Do not add wrapper circuits`\
+  -t predict \
+  -t train \
+  -m                        `# Add a mainloop`\
+  model.bin
+```
+
+The mean squared error used in the model includes a division operation.
+Since the FPGA backend is currently unable to synthesize divisions, a constant propagation pass was added to the compilation pipeline which replaces divisions by constant divisors with multiplications by the inverse of these divisors.
+
+A custom wrapper ui circuit is used to enable the user to trigger the training process by pressing a button.
+
+```verilog
+module main(input clk_25mhz, input [6:0] btn, output [7:0] led, output wifi_gpio0);
+  assign wifi_gpio0 = 1'b1;
+  
+  wire [23:0] data;
+  wire [15:0] read_index;
+  assign read_index = (btn[5] ? 2 : 0) | (btn[6] ? 1 : 0);
+  mod0 __mod0(clk_25mhz, {15'b0, btn[3]}, 3, read_index, data); // Instance of the model circuit
+  assign led = btn[2] ? data[23:16] : (btn[1] ? data[15:8] : data[7:0]);
+endmodule
+```
+
 ## Future Work
 
 These are some features which are not implemented in this prototype, but are important for the final implementation in exprgrad itself.
