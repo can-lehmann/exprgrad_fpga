@@ -12,7 +12,7 @@ Scalar values are represented by fixed point numbers.
 Let's look at how a simple matrix multiplication example is compiled to a hardware description.
 
 First a user implements the matrix multiplication operation using exprgrad's domain specific language.
-The resulting model (= program containing the kernel and inputs, parameters, ...) is saved to disk.
+The resulting model (= program containing the kernels and parameter states) is saved to disk.
 
 ```nim
 import exprgrad, exprgrad/io/serialize
@@ -63,7 +63,7 @@ A circuit may contain cycles when at least one component in the cycle is a regis
 Cycles within combinatorial logic are not allowed.
 
 A loop is implemented as a counter which increments when the inner loop has finished iterating over its domain.
-If a loop is the innermost loop, it increements on each clock cycle if the kernel is active.
+If a loop is the innermost loop, it increments on each clock cycle if the kernel is active.
 When all loops of a kernel have iterated over their domain, the next kernel may perform its computation.
 
 In this case the resulting circuit graph looks like this:
@@ -77,7 +77,7 @@ The resulting Verilog code can be seen [here](docs/matmul.v).
 
 ## XOR Example
 
-The prototype backend is already able to synthesize logic circuits for a small subset of exprgrad programs.
+The prototype backend is already able to synthesize logic circuits for a subset of exprgrad programs.
 To demonstrate this, a simple XOR neural network built from **unmodified** exprgrad DNN layers is compiled to a logic circuit.
 
 ```nim
@@ -107,7 +107,7 @@ echo model.call("predict", {"x": train_x})
 model.save("model.bin")
 ```
 
-The network is similar to the one shown in the exprgrad README, except for that it uses a ReLU after the 2nd layer instead of a sigmoid activation.
+The network is similar to the one shown in the [exprgrad README](https://github.com/can-lehmann/exprgrad), except for that it uses a ReLU after the 2nd layer instead of a sigmoid activation.
 Sigmoids are not supported by the prototype backend, since a general solution for synthesizing exponential functions would require automatically creating lookup tables which (while it is simple) is outside of the scope of this prototype.
 
 Compiling this model using
@@ -141,21 +141,9 @@ Additionally a "mainloop" must be added to the program in order to enable execut
 ```
 
 The mean squared error used in the model includes a division operation.
-Since the FPGA backend is currently unable to synthesize divisions, a constant propagation pass was added to the compilation pipeline which replaces divisions by constant divisors with multiplications by the inverse of these divisors.
+Since the FPGA backend is currently unable to synthesize divisions, a constant propagation pass was added to the compilation pipeline which replaces divisions by a constant divisor with multiplications by the inverse of the divisor.
 
 A custom wrapper ui circuit is used to enable the user to trigger the training process by pressing a button.
-
-```verilog
-module main(input clk_25mhz, input [6:0] btn, output [7:0] led, output wifi_gpio0);
-  assign wifi_gpio0 = 1'b1;
-  
-  wire [23:0] data;
-  wire [15:0] read_index;
-  assign read_index = (btn[5] ? 2 : 0) | (btn[6] ? 1 : 0);
-  mod0 __mod0(clk_25mhz, {15'b0, btn[3]}, 3, read_index, data); // Instance of the model circuit
-  assign led = btn[2] ? data[23:16] : (btn[1] ? data[15:8] : data[7:0]);
-endmodule
-```
 
 ## Future Work
 
