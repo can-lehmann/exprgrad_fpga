@@ -162,6 +162,7 @@ These are some features which are not implemented in this prototype, but are imp
 
 The FPGA backend prototype is currently only compatible with the [ULX3S](https://github.com/emard/ulx3s) development board and the ECP5 85 FPGA.
 It uses the yosys/nextpnr/fujprog toolchain.
+Thanks to the [Chair of Dependable Nano Computing](https://cdnc.itec.kit.edu/) at the Karlsruhe Institute of Technology for lending me the FPGA development board for working on this prototype.
 
 ## Contributing
 
